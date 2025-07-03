@@ -48,6 +48,7 @@ optim:
 
 seed: 42
 save_every: 50000
+log_every: 1000
 
 augment:
   shift_same: false

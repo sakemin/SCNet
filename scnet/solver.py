@@ -249,6 +249,11 @@ class Solver(object):
 
             losses = averager(losses)
             
+            if (idx+1) % self.config.log_every == 0:
+                formatted = self._format_train(losses)
+                logger.info(
+                    f'Train Summary | Epoch {epoch + 1} | {_summary(formatted)}')
+
             del loss, estimate
 
         if train:
