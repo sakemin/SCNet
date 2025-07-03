@@ -7,7 +7,9 @@ requires-python = ">=3.10"
 dependencies = [
     "accelerate==0.32.1",
     "einops==0.6.1",
+    "ipykernel>=6.29.5",
     "julius==0.2.7",
+    "jupyter>=1.1.1",
     "ml-collections==0.1.1",
     "numpy>=1.26.4",
     "pyyaml>=6.0.2",
