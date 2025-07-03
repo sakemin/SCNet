@@ -1,6 +1,6 @@
 
 data:
-  wav: /root/autodl-tmp/musdbhq
+  wav: /home/kof008/musdb18hq
   samplerate: 44100
   segment: 11
   shift: 1
