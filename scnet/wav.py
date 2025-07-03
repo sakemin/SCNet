@@ -154,9 +154,23 @@ class Wavset:
             wavs = []
             for source in self.sources:
                 file = self.get_file(name, source)
-                wav, _ = ta.load(str(file), frame_offset=offset, num_frames=num_frames)
-                wav = convert_audio_channels(wav, self.channels)
+                if not os.path.exists(file):
+                    wav = th.zeros(self.channels, num_frames)
+                else:
+                    wav, _ = ta.load(str(file), frame_offset=offset, num_frames=num_frames)
+                    wav = convert_audio_channels(wav, self.channels)
                 wavs.append(wav)
+
+            # Find the minimum length among loaded wavs to handle size mismatch (caused by replacing non-existing source with zeros)
+            min_length = float('inf')
+            for wav in wavs:
+              if wav.shape[-1] < min_length:
+                min_length = wav.shape[-1]
+            
+            # Truncate any wavs that are longer than min_length
+            for i in range(len(wavs)):
+              if wavs[i].shape[-1] > min_length:
+                wavs[i] = wavs[i][..., :min_length]
 
             example = th.stack(wavs)
             example = julius.resample_frac(example, meta['samplerate'], self.samplerate)
