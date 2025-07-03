@@ -27,34 +27,35 @@ def _track_metadata(track, sources, normalize=True, ext=EXT):
     track_samplerate = None
     mean = 0
     std = 1
-    for source in sources + [MIXTURE]:
+    for source in [MIXTURE] + sources:
         file = track / f"{source}{ext}"
-        try:
-            info = ta.info(str(file))
-        except RuntimeError:
-            print(file)
-            raise
-        length = info.num_frames
-        if track_length is None:
-            track_length = length
-            track_samplerate = info.sample_rate
-        elif track_length != length:
-            raise ValueError(
-                f"Invalid length for file {file}: "
-                f"expecting {track_length} but got {length}.")
-        elif info.sample_rate != track_samplerate:
-            raise ValueError(
-                f"Invalid sample rate for file {file}: "
-                f"expecting {track_samplerate} but got {info.sample_rate}.")
-        if source == MIXTURE and normalize:
+        if os.path.exists(file):
             try:
-                wav, _ = ta.load(str(file))
+                info = ta.info(str(file))
             except RuntimeError:
                 print(file)
                 raise
-            wav = wav.mean(0)
-            mean = wav.mean().item()
-            std = wav.std().item()
+            length = info.num_frames
+            if track_length is None:
+                track_length = length
+                track_samplerate = info.sample_rate
+            elif track_length != length:
+                raise ValueError(
+                    f"Invalid length for file {file}: "
+                    f"expecting {track_length} but got {length}.")
+            elif info.sample_rate != track_samplerate:
+                raise ValueError(
+                    f"Invalid sample rate for file {file}: "
+                    f"expecting {track_samplerate} but got {info.sample_rate}.")
+            if source == MIXTURE and normalize:
+                try:
+                    wav, _ = ta.load(str(file))
+                except RuntimeError:
+                    print(file)
+                    raise
+                wav = wav.mean(0)
+                mean = wav.mean().item()
+                std = wav.std().item()
 
     return {"length": length, "mean": mean, "std": std, "samplerate": track_samplerate}
 
