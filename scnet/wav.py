@@ -114,6 +114,8 @@ def build_metadata(path, sources, normalize=True, ext=EXT):
             pendings.append((name, pool.submit(_track_metadata, root, sources, normalize, ext, path.name)))
             # meta[name] = _track_metadata(root, sources, normalize, ext)
         for name, pending in tqdm.tqdm(pendings, ncols=120):
+            if pending.result()['length'] is None: # If the track is not found, skip it
+                continue
             meta[name] = pending.result()
     return meta
 
