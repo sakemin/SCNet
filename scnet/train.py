@@ -43,6 +43,9 @@ def get_solver(args):
             betas=(config.optim.optim.momentum, config.optim.beta2),
             weight_decay=config.optim.weight_decay)
 
+    if not hasattr(config.data, 'block'):
+        config.data.block = False
+    
     train_set, valid_set = get_wav_datasets(config.data)
 
     logger.info("train/valid set size: %d %d", len(train_set), len(valid_set))
@@ -75,7 +78,7 @@ def main():
     if not os.path.isfile(args.config_path):
         print(f"Error: config file {args.config_path} does not exist.")
         sys.exit(1)
-        
+    
     solver = get_solver(args)
     accelerator.wait_for_everyone()
     solver.train()
