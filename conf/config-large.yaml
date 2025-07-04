@@ -1,4 +1,5 @@
 data:
+  block: false
   wav: /home/kof008/scnet_full_dataset/
   samplerate: 44100
   segment: 11
@@ -48,7 +49,8 @@ optim:
 
 seed: 42
 save_every: 50000
-log_every: 1000
+log_every: 100
+val_every: 5000
 
 augment:
   shift_same: false

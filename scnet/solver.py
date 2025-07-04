@@ -9,6 +9,7 @@ from tqdm import tqdm
 from .log import logger
 from accelerate import Accelerator
 from torch.cuda.amp import GradScaler, autocast
+import wandb
 
 def _summary(metrics):
     return " | ".join(f"{key.capitalize()}={val}" for key, val in metrics.items())
@@ -58,6 +59,9 @@ class Solver(object):
         self.best_nsdr = 0
         self.epoch = -1
         self._reset()
+        
+        if self.accelerator.is_main_process:
+            wandb.init(entity='sakemin', project='scnet' if not config.data.block else 'scnet-block')
 
     def _serialize(self, epoch, steps=0):
         package = {}
@@ -168,7 +172,10 @@ class Solver(object):
             formatted = self._format_train(metrics['valid'])
             logger.info(
                 f'Valid Summary | Epoch {epoch + 1} | {_summary(formatted)}')
-            
+            if self.accelerator.is_main_process:
+                for key, val in metrics['valid'].items():
+                    wandb.log({f'valid/{key}': val})
+
             valid_nsdr = metrics['valid']['nsdr']
             # Save the best model
             if valid_nsdr > self.best_nsdr:
@@ -252,10 +259,46 @@ class Solver(object):
             if (idx+1) % self.config.log_every == 0:
                 formatted = self._format_train(losses)
                 logger.info(
-                    f'Train Summary | Epoch {epoch + 1} | {_summary(formatted)}')
+                    f'Train Summary | Epoch {epoch + 1} | Step {idx+1} | {_summary(formatted)}')
+                if self.accelerator.is_main_process:
+                    for key, val in losses.items():
+                        wandb.log({f'train/{key}': val}, step=idx)
 
             del loss, estimate
 
+            if (idx+1) % self.config.val_every == 0 and train:
+                self.model.eval()  # Turn off Batchnorm & Dropout
+                metrics = {}
+                with torch.no_grad():
+                    valid = self._run_one_epoch(epoch, train=False)
+                    bvalid = valid
+                    bname = 'main'
+                    state = copy_state(self.model.state_dict())
+                    metrics['valid'] = {}
+                    metrics['valid']['main'] = valid
+                    for kind, emas in self.emas.items():
+                        for k, ema in enumerate(emas):
+                            with ema.swap():
+                                valid = self._run_one_epoch(epoch, train=False)
+                            name = f'ema_{kind}_{k}'
+                            metrics['valid'][name] = valid
+                            a = valid['nsdr']
+                            b = bvalid['nsdr']
+                            if a > b:
+                                bvalid = valid
+                                state = ema.state
+                                bname = name
+                        metrics['valid'].update(bvalid)
+                        metrics['valid']['bname'] = bname
+
+                formatted = self._format_train(metrics['valid'])
+                logger.info(
+                    f'Valid Summary | Epoch {epoch + 1} | Step {idx+1} | {_summary(formatted)}')
+                if self.accelerator.is_main_process:
+                    for key, val in metrics['valid']['main'].items():
+                        wandb.log({f'valid/{key}': val}, step=idx)
+                self.model.train()
+            
         if train:
             for ema in self.emas['epoch']:
                 ema.update()
