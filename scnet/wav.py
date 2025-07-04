@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import tqdm
 
+import random
 import julius
 import torch as th
 import torchaudio as ta
@@ -192,13 +193,18 @@ class Wavset:
             # Find the minimum length among loaded wavs to handle size mismatch (caused by replacing non-existing source with zeros)
             min_length = float('inf')
             for wav in wavs:
-              if wav.shape[-1] < min_length:
-                min_length = wav.shape[-1]
+                if wav.shape[-1] < min_length:
+                    min_length = wav.shape[-1]
             
-            # Truncate any wavs that are longer than min_length
             for i in range(len(wavs)):
-              if wavs[i].shape[-1] > min_length:
-                wavs[i] = wavs[i][..., :min_length]
+               # Truncate any wavs that are longer than min_length
+                if wavs[i].shape[-1] > min_length:
+                    wavs[i] = wavs[i][..., :min_length]
+
+                # Inject noise to the silence
+                if wavs[i].count_nonzero() < 0.8 * wavs[i].numel(): # MoisesDB silences have around 0.9 nonzero ratio
+                    std = random.uniform(0.00003, 0.00009) # 3e-5~9e-5 is the standard deviation of the noise from silences in MoisesDB
+                    wavs[i] = wavs[i] + th.randn_like(wavs[i]) * std 
 
             example = th.stack(wavs)
             example = julius.resample_frac(example, meta['samplerate'], self.samplerate)
