@@ -1,5 +1,6 @@
 
 data:
+  block: false
   wav: /home/kof008/musdb18hq
   samplerate: 44100
   segment: 11
@@ -8,6 +9,11 @@ data:
   normalize: true
   metadata: ./metadata
   sources: ['drums', 'bass', 'other', 'vocals']
+  toothless: 'replace' # 'replace' or 'zero'
+  replace_silence: true
+  replace_silence_prob: 0.5
+  noise_inject: true
+  noise_inject_prob: 1.0
 
 ema:
   epoch: [0.9, 0.95]
