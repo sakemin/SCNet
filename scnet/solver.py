@@ -238,6 +238,13 @@ class Solver(object):
             if train:
                 scaled_loss = self.scaler.scale(loss)
                 self.accelerator.backward(scaled_loss)
+
+                # Unscale the gradients and apply gradient clipping
+                self.scaler.unscale_(self.optimizer)  # required before clipping when using mixed precision
+                max_norm = getattr(self.config.optim, 'max_grad_norm', 1.0)
+                if max_norm is not None and max_norm > 0:
+                    self.accelerator.clip_grad_norm_(self.model.parameters(), max_norm)
+
                 grad_norm = 0
                 grads = []
                 for p in self.model.parameters():
