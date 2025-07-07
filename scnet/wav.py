@@ -125,7 +125,7 @@ class Wavset:
             self,
             root, metadata, sources,
             segment=None, shift=None, normalize=True,
-            samplerate=44100, channels=2, ext=EXT):
+            samplerate=44100, channels=2, ext=EXT, toothless='replace', noise_inject=False, noise_inject_prob=1.0, replace_silence=False):
         """
         Waveset (or mp3 set for that matter). Can be used to train
         with arbitrary sources. Each track should be one folder inside of `path`.
@@ -156,6 +156,10 @@ class Wavset:
         self.channels = channels
         self.samplerate = samplerate
         self.ext = ext
+        self.toothless = toothless
+        self.noise_inject = noise_inject
+        self.noise_inject_prob = noise_inject_prob
+        self.replace_silence = replace_silence
         self.num_examples = []
         for name, meta in self.metadata.items():
             track_duration = meta['length'] / meta['samplerate']
@@ -186,30 +190,88 @@ class Wavset:
             for source in self.sources:
                 file = self.get_file(name, source)
                 if not os.path.exists(file):
-                    wav = th.zeros(self.channels, num_frames)
+                    if self.toothless == 'zero':
+                        wav = th.zeros(self.channels, num_frames)
+                    elif self.toothless == 'replace':
+                        # Try to find a random existing file for the source
+                        wav = None
+                        while 1:
+                            # Pick a random track name from metadata
+                            random_name = random.choice(list(self.metadata.keys()))
+                            random_file = self.get_file(random_name, source)
+                            
+                            if os.path.exists(random_file):
+                                random_meta = self.metadata[random_name]
+                                # Calculate random offset if segment is defined
+                                if self.segment is not None:
+                                    max_offset = int(random_meta['length'] - num_frames)
+                                    random_offset = random.randint(0, max(0, max_offset))
+                                else:
+                                    random_offset = 0
+                                
+                                # Load audio from random file
+                                wav, _ = ta.load(str(random_file), frame_offset=random_offset, num_frames=num_frames)
+                                wav = convert_audio_channels(wav, self.channels)
+
+                                break
+                            
+                        if wav is None:
+                            # If no valid file found after max attempts, use zeros
+                            print(f"No valid file found for {source} in {name}, using zeros")
+                            wav = th.zeros(self.channels, num_frames)
+                    else:
+                        raise ValueError(f"Invalid toothless value: {self.toothless}")
                 else:
                     wav, _ = ta.load(str(file), frame_offset=offset, num_frames=num_frames)
                     wav = convert_audio_channels(wav, self.channels)
+
+                if self.replace_silence:
+                    if wav.count_nonzero() < 0.8 * wav.numel():
+                        while 1:
+                            random_name = random.choice(list(self.metadata.keys()))
+                            random_file = self.get_file(random_name, source)
+                            if os.path.exists(random_file):
+                                random_meta = self.metadata[random_name]
+                                if self.segment is not None:
+                                    max_offset = int(random_meta['length'] - num_frames)
+                                    random_offset = random.randint(0, max(0, max_offset))
+                                else:
+                                    random_offset = 0
+                                wav, _ = ta.load(str(random_file), frame_offset=random_offset, num_frames=num_frames)
+                                wav = convert_audio_channels(wav, self.channels)
+
+                                if wav.count_nonzero() > 0.8 * wav.numel():
+                                    break
+
                 wavs.append(wav)
 
-            # Find the minimum length among loaded wavs to handle size mismatch (caused by replacing non-existing source with zeros)
-            min_length = float('inf')
-            for wav in wavs:
-                if wav.shape[-1] < min_length:
-                    min_length = wav.shape[-1]
-            
-            for i in range(len(wavs)):
-               # Truncate any wavs that are longer than min_length
-                if wavs[i].shape[-1] > min_length:
-                    wavs[i] = wavs[i][..., :min_length]
+            # Determine the minimum length across all loaded sources and trim
+            min_length = min(wav.shape[-1] for wav in wavs)
+            wavs = [wav[..., :min_length] for wav in wavs]
 
-                # Inject noise to the silence
-                if wavs[i].count_nonzero() < 0.8 * wavs[i].numel(): # MoisesDB silences have around 0.9 nonzero ratio
-                    std = random.uniform(0.00003, 0.00009) # 3e-5~9e-5 is the standard deviation of the noise from silences in MoisesDB
-                    wavs[i] = wavs[i] + th.randn_like(wavs[i]) * std 
+            # Convert list -> tensor of shape (nb_sources, channels, time)
+            example = th.stack(wavs)  # will be further processed below
 
-            example = th.stack(wavs)
+            # Optionally add noise to silent regions in batch
+            if self.noise_inject:
+                # Compute per-source non-zero counts
+                elems_per_src = example.shape[1] * example.shape[2]
+                nonzero_counts = example.ne(0).sum(dim=(1, 2))
+                silence_mask = nonzero_counts < 0.8 * elems_per_src  # boolean mask per source
+
+                if silence_mask.any() and random.random() < self.noise_inject_prob:
+                    # Random std ∈ [3e-5, 9e-5] for each source
+                    stds = th.empty(example.size(0), dtype=example.dtype, device=example.device).uniform_(0.00003, 0.00009)
+                    noise = th.randn_like(example) * stds[:, None, None]
+                    example = example + noise * silence_mask[:, None, None]
+
+            # "example" now contains the stacked, processed audio for all sources
+
+            # julius expects (nb_sources, channels, time)
+
             example = julius.resample_frac(example, meta['samplerate'], self.samplerate)
+
+            # Normalization and padding remain unchanged below
             if self.normalize:
                 example = (example - meta['mean']) / meta['std']
             if self.segment:
@@ -265,10 +327,10 @@ def get_wav_datasets(args):
         train_set = Wavset(train_path, train, args.sources,
                         segment=args.segment, shift=args.shift,
                         samplerate=args.samplerate, channels=args.channels,
-                        normalize=args.normalize)
+                        normalize=args.normalize, toothless=args.toothless, noise_inject=args.noise_inject, noise_inject_prob=args.noise_inject_prob, replace_silence=args.replace_silence)
         valid_set = Wavset(valid_path, valid, [MIXTURE] + list(args.sources),
                         samplerate=args.samplerate, channels=args.channels,
-                        normalize=args.normalize, **kw_cv)
+                        normalize=args.normalize, toothless="zero", noise_inject=False, replace_silence=False, **kw_cv)
     return train_set, valid_set
 
 
