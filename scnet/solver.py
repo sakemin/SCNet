@@ -15,7 +15,7 @@ def _summary(metrics):
     return " | ".join(f"{key.capitalize()}={val}" for key, val in metrics.items())
 
 class Solver(object):
-    def __init__(self, loaders, model, optimizer, config, args):
+    def __init__(self, loaders, model, optimizer, config, args, save_path):
         self.config = config
         self.loaders = loaders
 
@@ -52,16 +52,18 @@ class Solver(object):
                 augments.append(getattr(augment, aug.capitalize())(**kw))
         self.augment = torch.nn.Sequential(*augments)
 
-        self.folder = args.save_path
+        if self.accelerator.is_main_process:
+            self.run = wandb.init(entity='sakemin', project='scnet' if not config.data.block else 'scnet-block')
+            wandb.config.update(config)
+
+        self.folder = self.run.dir
         # Checkpoints
-        self.checkpoint_file = Path(args.save_path) / 'checkpoint.th'
+        self.checkpoint_file = Path(self.run.dir) / 'files' / 'checkpoints' / 'checkpoint.th'
         self.best_state = None
         self.best_nsdr = 0
         self.epoch = -1
         self._reset()
         
-        if self.accelerator.is_main_process:
-            wandb.init(entity='sakemin', project='scnet' if not config.data.block else 'scnet-block')
 
     def _serialize(self, epoch, steps=0):
         package = {}
