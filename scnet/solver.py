@@ -129,6 +129,10 @@ class Solver(object):
             for param_group in self.optimizer.param_groups:
               param_group['lr'] = self.config.optim.lr * (self.config.optim.decay_rate**((epoch)//self.config.optim.decay_step))
               logger.info(f"Learning rate adjusted to {self.optimizer.param_groups[0]['lr']}")
+            
+            # Log learning rate to wandb
+            if self.accelerator.is_main_process:
+                wandb.log({"learning_rate": self.optimizer.param_groups[0]['lr']}, step=epoch)
 
             # Train one epoch
             self.model.train()
@@ -174,11 +178,13 @@ class Solver(object):
             formatted = self._format_train(metrics['valid'])
             logger.info(
                 f'Valid Summary | Epoch {epoch + 1} | {_summary(formatted)}')
+                
             if self.accelerator.is_main_process:
                 for key, val in metrics['valid'].items():
-                    wandb.log({f'valid/{key}': val})
+                    wandb.log({"epoch": epoch + 1, f'valid/{key}': val})
 
             valid_nsdr = metrics['valid']['nsdr']
+
             # Save the best model
             if valid_nsdr > self.best_nsdr:
               logger.info('New best valid nsdr %.4f', valid_nsdr)
@@ -262,8 +268,6 @@ class Solver(object):
                     ema.update()
                 if self.config.save_every and (idx+1) % self.config.save_every == 0:
                     self._serialize(epoch, idx+1)
-
-            losses = averager(losses)
             
             if (idx+1) % self.config.log_every == 0:
                 formatted = self._format_train(losses)
@@ -271,7 +275,9 @@ class Solver(object):
                     f'Train Summary | Epoch {epoch + 1} | Step {idx+1} | {_summary(formatted)}')
                 if self.accelerator.is_main_process:
                     for key, val in losses.items():
-                        wandb.log({f'train/{key}': val}, step=idx)
+                        wandb.log({f'train/{key}': val}, step= epoch * len(data_loader) + idx)
+
+            losses = averager(losses)
 
             del loss, estimate
 
