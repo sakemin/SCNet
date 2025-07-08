@@ -10,9 +10,23 @@ from .log import logger
 from accelerate import Accelerator
 from torch.cuda.amp import GradScaler, autocast
 import wandb
+import os
+import soundfile as sf
+import torchaudio
+import tempfile
+from pydub import AudioSegment
 
 def _summary(metrics):
     return " | ".join(f"{key.capitalize()}={val}" for key, val in metrics.items())
+
+def _convert_to_mp3(wav_path, bitrate="192k"):
+    """Convert a wav file to mp3 and return the temporary mp3 path."""
+    temp_dir = tempfile.gettempdir()
+    mp3_filename = os.path.basename(wav_path).replace('.wav', '.mp3')
+    mp3_path = os.path.join(temp_dir, mp3_filename)
+    audio = AudioSegment.from_wav(wav_path)
+    audio.export(mp3_path, format="mp3", bitrate=bitrate)
+    return mp3_path
 
 class Solver(object):
     def __init__(self, loaders, model, optimizer, config, args, save_path):
@@ -64,6 +78,16 @@ class Solver(object):
         self.epoch = -1
         self._reset()
         
+        self.mp3_temp_files = []  # keep track of temporary mp3 files to delete later
+        # Audio logging configuration (optional)
+        if config.audio_log.enable:
+            self.audio_log = True
+            self.audio_log_samples = getattr(config.audio_log, 'samples', [])  # list[str] of track folder names
+            self.audio_log_root = getattr(config.audio_log, 'root', getattr(config.data, 'wav', None) if hasattr(config, 'data') else None)
+            self.audio_log_segment = getattr(config.audio_log, 'segment', 11.0)  # seconds
+            self.audio_log_start = getattr(config.audio_log, 'start', 0.0)  # seconds
+            self.audio_log_use_mp3 = getattr(config.audio_log, 'use_mp3', True)
+            self.audio_log_mp3_bitrate = getattr(config.audio_log, 'mp3_bitrate', '192k')
 
     def _serialize(self, epoch, steps=0):
         package = {}
@@ -311,10 +335,74 @@ class Solver(object):
                     f'Valid Summary | Epoch {epoch + 1} | Step {idx+1} | {_summary(formatted)}')
                 if self.accelerator.is_main_process:
                     for key, val in metrics['valid']['main'].items():
-                        wandb.log({f'valid/{key}': val}, step=idx)
+                        wandb.log({f'valid/{key}': val}, step= epoch * len(data_loader) + idx)
+                
+                if self.audio_log:
+                    # Log fixed audio samples
+                    global_step = epoch * len(data_loader) + idx
+                    self._log_audio_samples(global_step)
                 self.model.train()
             
         if train:
             for ema in self.emas['epoch']:
                 ema.update()
         return losses
+
+    def _log_audio_samples(self, step):
+        """Run separation on fixed audio segments and log to WandB."""
+        if not self.accelerator.is_main_process:
+            return
+        if not self.audio_log_samples or self.audio_log_root is None:
+            return
+        for sample_name in self.audio_log_samples:
+            track_dir = Path(self.audio_log_root) / sample_name
+            mixture_path = track_dir / 'mixture.wav'
+            if not mixture_path.exists():
+                continue
+            # Load mixture
+            mix, sr = torchaudio.load(str(mixture_path))  # shape (C, T)
+            start_sample = int(self.audio_log_start * sr)
+            end_sample = start_sample + int(self.audio_log_segment * sr)
+            mix_seg = mix[:, start_sample:end_sample]
+            mix_tensor = mix_seg.unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                est = apply_model(self.model, mix_tensor, split=False, overlap=0)
+            est = est[0].cpu()  # (sources, C, T)
+            # Log mixture segment
+            wandb.log({f"audio_eval/{sample_name}/mixture": wandb.Audio(mix_seg.numpy(), caption="Mixture", sample_rate=sr)}, step=step)
+            # Iterate over sources
+            for src_idx, source in enumerate(self.config.model.sources):
+                gt_path = track_dir / f"{source}.wav"
+                gt_audio = None
+                if gt_path.exists():
+                    gt, _ = torchaudio.load(str(gt_path))
+                    gt_audio = gt[:, start_sample:end_sample].numpy()
+                pred_audio = est[src_idx].numpy()
+                # Prepare WandB Audio objects (optionally convert to mp3)
+                entries = []
+                for label, audio_arr in [("Ground Truth", gt_audio), ("Prediction", pred_audio)]:
+                    if audio_arr is None:
+                        entries.append(None)
+                        continue
+                    if self.audio_log_use_mp3:
+                        tmp_wav = tempfile.mktemp(suffix='.wav')
+                        sf.write(tmp_wav, audio_arr.T, sr)
+                        mp3_path = _convert_to_mp3(tmp_wav, self.audio_log_mp3_bitrate)
+                        os.remove(tmp_wav)
+                        self.mp3_temp_files.append(mp3_path)
+                        entries.append(wandb.Audio(mp3_path, caption=f"{label} {source}", sample_rate=sr))
+                    else:
+                        entries.append(wandb.Audio(audio_arr, caption=f"{label} {source}", sample_rate=sr))
+                if any(a is not None for a in entries):
+                    table = wandb.Table(columns=["Ground Truth", "Prediction"])
+                    table.add_data(*entries)
+                    wandb.log({f"audio_eval/{sample_name}/{source}": table}, step=step)
+
+    def __del__(self):
+        """Clean up temporary mp3 files created during logging."""
+        for mp3_path in self.mp3_temp_files:
+            try:
+                if os.path.exists(mp3_path):
+                    os.remove(mp3_path)
+            except Exception as e:
+                print(f"Warning: Failed to remove temporary file {mp3_path}: {e}")

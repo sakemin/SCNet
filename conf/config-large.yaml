@@ -70,3 +70,12 @@ augment:
 
 misc:
   num_workers: 10
+
+audio_log:
+  enable: True
+  samples: ['nucksal-money-song1', 'djrootplant-urban-song1', 'yunb-lost-song1']
+  root: /home/kof008/scnet_full_dataset/valid
+  segment: 11
+  start: 30
+  use_mp3: True
+  mp3_bitrate: 192k
