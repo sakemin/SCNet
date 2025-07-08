@@ -125,7 +125,7 @@ class Wavset:
             self,
             root, metadata, sources,
             segment=None, shift=None, normalize=True,
-            samplerate=44100, channels=2, ext=EXT, toothless='replace', noise_inject=False, noise_inject_prob=1.0, replace_silence=False):
+            samplerate=44100, channels=2, ext=EXT, toothless='replace', noise_inject=False, noise_inject_prob=1.0, replace_silence=False, replace_silence_prob=1.0):
         """
         Waveset (or mp3 set for that matter). Can be used to train
         with arbitrary sources. Each track should be one folder inside of `path`.
@@ -160,6 +160,7 @@ class Wavset:
         self.noise_inject = noise_inject
         self.noise_inject_prob = noise_inject_prob
         self.replace_silence = replace_silence
+        self.replace_silence_prob = replace_silence_prob
         self.num_examples = []
         for name, meta in self.metadata.items():
             track_duration = meta['length'] / meta['samplerate']
@@ -211,6 +212,8 @@ class Wavset:
                                 
                                 # Load audio from random file
                                 wav, _ = ta.load(str(random_file), frame_offset=random_offset, num_frames=num_frames)
+                                if random_meta['samplerate'] != meta['samplerate']: # resample to the same sample rate as the target track
+                                    wav = julius.resample_frac(wav, random_meta['samplerate'], meta['samplerate'])
                                 wav = convert_audio_channels(wav, self.channels)
 
                                 break
@@ -238,6 +241,8 @@ class Wavset:
                                 else:
                                     random_offset = 0
                                 wav, _ = ta.load(str(random_file), frame_offset=random_offset, num_frames=num_frames)
+                                if random_meta['samplerate'] != meta['samplerate']: # resample to the same sample rate as the target track
+                                    wav = julius.resample_frac(wav, random_meta['samplerate'], meta['samplerate'])
                                 wav = convert_audio_channels(wav, self.channels)
 
                                 if wav.count_nonzero() > 0.8 * wav.numel():
@@ -327,7 +332,7 @@ def get_wav_datasets(args):
         train_set = Wavset(train_path, train, args.sources,
                         segment=args.segment, shift=args.shift,
                         samplerate=args.samplerate, channels=args.channels,
-                        normalize=args.normalize, toothless=args.toothless, noise_inject=args.noise_inject, noise_inject_prob=args.noise_inject_prob, replace_silence=args.replace_silence)
+                        normalize=args.normalize, toothless=args.toothless, noise_inject=args.noise_inject, noise_inject_prob=args.noise_inject_prob, replace_silence=args.replace_silence, replace_silence_prob=args.replace_silence_prob)
         valid_set = Wavset(valid_path, valid, [MIXTURE] + list(args.sources),
                         samplerate=args.samplerate, channels=args.channels,
                         normalize=args.normalize, toothless="zero", noise_inject=False, replace_silence=False, **kw_cv)
