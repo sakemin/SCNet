@@ -8,6 +8,7 @@ from .loss import spec_rmse_loss
 from tqdm import tqdm
 from .log import logger
 from accelerate import Accelerator
+from accelerate.utils import DistributedType
 from torch.cuda.amp import GradScaler, autocast
 import wandb
 import os
@@ -15,6 +16,7 @@ import soundfile as sf
 import torchaudio
 import tempfile
 from pydub import AudioSegment
+import torch.distributed as dist
 
 def _summary(metrics):
     return " | ".join(f"{key.capitalize()}={val}" for key, val in metrics.items())
@@ -29,7 +31,7 @@ def _convert_to_mp3(wav_path, bitrate="192k"):
     return mp3_path
 
 class Solver(object):
-    def __init__(self, loaders, model, optimizer, config, args, save_path):
+    def __init__(self, loaders, model, optimizer, config, args):
         self.config = config
         self.loaders = loaders
 
@@ -70,17 +72,33 @@ class Solver(object):
             self.run = wandb.init(entity='sakemin', project='scnet' if not config.data.block else 'scnet-block')
             wandb.config.update(config)
 
-        self.folder = self.run.dir
-        # Checkpoints
-        self.checkpoint_file = Path(self.run.dir) / 'files' / 'checkpoints' / 'checkpoint.th'
+        # Broadcast the checkpoint directory path from the main process to all others
+        if self.accelerator.is_main_process:
+            run_dir = self.run.dir
+        else:
+            run_dir = None
+
+        # Broadcast run_dir from rank 0 to all other ranks using torch.distributed
+        if self.accelerator.state.distributed_type != DistributedType.NO and dist.is_initialized():
+            obj_list = [run_dir]
+            dist.broadcast_object_list(obj_list, src=0)
+            run_dir = obj_list[0]
+
+        self.checkpoint_file = Path(run_dir) / 'checkpoints' / 'checkpoint.th'
+
+        # Checkpoint states
         self.best_state = None
         self.best_nsdr = 0
         self.epoch = -1
-        self._reset()
+
+        if self.accelerator.is_main_process:
+            self.checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+            self._reset()
         
         self.mp3_temp_files = []  # keep track of temporary mp3 files to delete later
         # Audio logging configuration (optional)
-        if config.audio_log.enable:
+        self.audio_log = False
+        if hasattr(config, 'audio_log') and getattr(config.audio_log, 'enable', False):
             self.audio_log = True
             self.audio_log_samples = getattr(config.audio_log, 'samples', [])  # list[str] of track folder names
             self.audio_log_root = getattr(config.audio_log, 'root', getattr(config.data, 'wav', None) if hasattr(config, 'data') else None)
@@ -203,9 +221,11 @@ class Solver(object):
             logger.info(
                 f'Valid Summary | Epoch {epoch + 1} | {_summary(formatted)}')
                 
-            if self.accelerator.is_main_process:
-                for key, val in metrics['valid'].items():
-                    wandb.log({"epoch": epoch + 1, f'valid/{key}': val})
+            # Log validation metrics (numeric only) averaged across GPUs
+            numeric_valid = {k: v for k, v in metrics['valid'].items() if not isinstance(v, dict)}
+            self._log_wandb(numeric_valid, step=epoch + 1, prefix='valid/')
+            # Also log epoch number separately
+            self._log_wandb({"epoch": epoch + 1}, step=epoch + 1)
 
             valid_nsdr = metrics['valid']['nsdr']
 
@@ -293,15 +313,16 @@ class Solver(object):
                 if self.config.save_every and (idx+1) % self.config.save_every == 0:
                     self._serialize(epoch, idx+1)
             
-            if (idx+1) % self.config.log_every == 0:
+            if train and (idx+1) % self.config.log_every == 0:
+                self._log_wandb(losses, step=epoch * len(data_loader) + idx, prefix="train_nonavg/")
+
+            losses = averager(losses)
+
+            if train and (idx+1) % self.config.log_every == 0:
+                self._log_wandb(losses, step=epoch * len(data_loader) + idx, prefix="train/")
                 formatted = self._format_train(losses)
                 logger.info(
                     f'Train Summary | Epoch {epoch + 1} | Step {idx+1} | {_summary(formatted)}')
-                if self.accelerator.is_main_process:
-                    for key, val in losses.items():
-                        wandb.log({f'train/{key}': val}, step= epoch * len(data_loader) + idx)
-
-            losses = averager(losses)
 
             del loss, estimate
 
@@ -333,9 +354,7 @@ class Solver(object):
                 formatted = self._format_train(metrics['valid'])
                 logger.info(
                     f'Valid Summary | Epoch {epoch + 1} | Step {idx+1} | {_summary(formatted)}')
-                if self.accelerator.is_main_process:
-                    for key, val in metrics['valid']['main'].items():
-                        wandb.log({f'valid/{key}': val}, step= epoch * len(data_loader) + idx)
+                self._log_wandb(metrics['valid']['main'], step=epoch * len(data_loader) + idx, prefix="valid/")
                 
                 if self.audio_log:
                     # Log fixed audio samples
@@ -368,8 +387,18 @@ class Solver(object):
             with torch.no_grad():
                 est = apply_model(self.model, mix_tensor, split=False, overlap=0)
             est = est[0].cpu()  # (sources, C, T)
-            # Log mixture segment
-            wandb.log({f"audio_eval/{sample_name}/mixture": wandb.Audio(mix_seg.numpy(), caption="Mixture", sample_rate=sr)}, step=step)
+            # Save mixture to temporary wav before optional mp3 conversion
+            tmp_mix_wav = tempfile.mktemp(suffix='.wav')
+            sf.write(tmp_mix_wav, mix_seg.T.numpy(), sr)
+            if self.audio_log_use_mp3:
+                mix_path = _convert_to_mp3(tmp_mix_wav, self.audio_log_mp3_bitrate)
+                self.mp3_temp_files.append(mix_path)
+                os.remove(tmp_mix_wav)
+            else:
+                mix_path = tmp_mix_wav
+            wandb.log({f"audio_eval/{sample_name}/mixture": wandb.Audio(mix_path, caption="Mixture", sample_rate=sr)}, step=step)
+            if not self.audio_log_use_mp3:
+                self.mp3_temp_files.append(mix_path)
             # Iterate over sources
             for src_idx, source in enumerate(self.config.model.sources):
                 gt_path = track_dir / f"{source}.wav"
@@ -384,19 +413,31 @@ class Solver(object):
                     if audio_arr is None:
                         entries.append(None)
                         continue
+                    tmp_wav = tempfile.mktemp(suffix='.wav')
+                    sf.write(tmp_wav, audio_arr.T, sr)
                     if self.audio_log_use_mp3:
-                        tmp_wav = tempfile.mktemp(suffix='.wav')
-                        sf.write(tmp_wav, audio_arr.T, sr)
-                        mp3_path = _convert_to_mp3(tmp_wav, self.audio_log_mp3_bitrate)
+                        path = _convert_to_mp3(tmp_wav, self.audio_log_mp3_bitrate)
                         os.remove(tmp_wav)
-                        self.mp3_temp_files.append(mp3_path)
-                        entries.append(wandb.Audio(mp3_path, caption=f"{label} {source}", sample_rate=sr))
+                        self.mp3_temp_files.append(path)
                     else:
-                        entries.append(wandb.Audio(audio_arr, caption=f"{label} {source}", sample_rate=sr))
+                        path = tmp_wav
+                        self.mp3_temp_files.append(path)
+                    entries.append(wandb.Audio(path, caption=f"{label} {source}", sample_rate=sr))
                 if any(a is not None for a in entries):
                     table = wandb.Table(columns=["Ground Truth", "Prediction"])
                     table.add_data(*entries)
                     wandb.log({f"audio_eval/{sample_name}/{source}": table}, step=step)
+
+    def _log_wandb(self, metrics: dict, *, step=None, prefix=""):
+        """Average every tensor/float in `metrics` across GPUs and log once."""
+        reduced = {}
+        for key, val in metrics.items():
+          if not torch.is_tensor(val):
+            val = torch.tensor(val, device=self.device)
+          val_mean = self.accelerator.reduce(val.detach(), reduction="mean").item()
+          reduced[f"{prefix}{key}"] = val_mean
+        if self.accelerator.is_main_process:
+          wandb.log(reduced, step=step)
 
     def __del__(self):
         """Clean up temporary mp3 files created during logging."""
