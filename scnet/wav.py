@@ -41,7 +41,7 @@ def _track_metadata(track, sources, normalize=True, ext=EXT, path_name=None):
     source_length = {}
     source_filename = {}
     for source in [MIXTURE] + sources:
-        if path_name in ["beatpulse_audio", "beatpulse_audio_1992", "beatpulse_audio_904", "pointune_audio"]:
+        if path_name in ["beatpulse_audio", "beatpulse_audio_1992", "beatpulse_audio_904", "pointune_audio", "pointune_10insts", "beatpulse_10insts"]:
             # Find matching file for the source
             found_file = None
             if source in SOURCE_VARIATIONS:
@@ -288,7 +288,7 @@ class Wavset:
 
 def get_wav_datasets(args):
     """Extract the wav datasets from the XP arguments."""
-    if args.block: # no train/valid split here, just use the entire dataset -> Need to split manually after acquiring the metadata
+    if args.multi_root: # no train/valid split here, just use the entire dataset -> Need to split manually after acquiring the metadata
         if isinstance(args.wav, str):
             args.wav = [args.wav]
         trains = {}
@@ -306,11 +306,11 @@ def get_wav_datasets(args):
             trains[wav] = train
             valids[wav] = valid
         kw_cv = {}
-        train_set = BlockWavset(args.wav, trains, args.sources,
+        train_set = MultiRootWavset(args.wav, trains, args.sources,
                         segment=args.segment, shift=args.shift,
                         samplerate=args.samplerate, channels=args.channels,
                         normalize=args.normalize)
-        valid_set = BlockWavset(args.wav, valids, [MIXTURE] + list(args.sources),
+        valid_set = MultiRootWavset(args.wav, valids, [MIXTURE] + list(args.sources),
                         samplerate=args.samplerate, channels=args.channels,
                         normalize=args.normalize, **kw_cv)
 
@@ -339,7 +339,7 @@ def get_wav_datasets(args):
     return train_set, valid_set
 
 
-class BlockWavset:
+class MultiRootWavset:
     def __init__(
             self,
             roots, metadatas, sources,
