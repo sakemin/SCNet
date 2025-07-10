@@ -69,7 +69,7 @@ class Solver(object):
         self.augment = torch.nn.Sequential(*augments)
 
         if self.accelerator.is_main_process:
-            self.run = wandb.init(entity='sakemin', project='scnet' if not config.data.block else 'scnet-block')
+            self.run = wandb.init(entity='sakemin', project='scnet' if not config.data.multi_root else 'scnet-10insts')
             wandb.config.update(config)
 
         # Broadcast the checkpoint directory path from the main process to all others
@@ -222,10 +222,11 @@ class Solver(object):
                 f'Valid Summary | Epoch {epoch + 1} | {_summary(formatted)}')
                 
             # Log validation metrics (numeric only) averaged across GPUs
-            numeric_valid = {k: v for k, v in metrics['valid'].items() if not isinstance(v, dict)}
-            self._log_wandb(numeric_valid, step=epoch + 1, prefix='valid/')
-            # Also log epoch number separately
-            self._log_wandb({"epoch": epoch + 1}, step=epoch + 1)
+            numeric_valid = {k: v for k, v in metrics['valid'].items() if isinstance(v, (int, float, torch.Tensor))}
+            self._log_wandb(numeric_valid, prefix='valid/')
+
+            # Also log the epoch number at the same step
+            self._log_wandb({"epoch": epoch + 1})
 
             valid_nsdr = metrics['valid']['nsdr']
 
@@ -432,11 +433,19 @@ class Solver(object):
         """Average every tensor/float in `metrics` across GPUs and log once."""
         reduced = {}
         for key, val in metrics.items():
-          if not torch.is_tensor(val):
-            val = torch.tensor(val, device=self.device)
-          val_mean = self.accelerator.reduce(val.detach(), reduction="mean").item()
+          # Accept tensors directly or convert numeric types; skip non-numeric entries (e.g., strings)
+          if torch.is_tensor(val):
+            # Ensure tensor is in floating dtype for safe division during reduction
+            val_tensor = val.float() if not val.is_floating_point() else val
+          elif isinstance(val, (int, float)):
+            val_tensor = torch.tensor(float(val), device=self.device)
+          else:
+            # Ignore values that cannot be converted to tensors (such as strings)
+            continue
+          val_mean = self.accelerator.reduce(val_tensor.detach(), reduction="mean").item()
           reduced[f"{prefix}{key}"] = val_mean
-        if self.accelerator.is_main_process:
+        # Only log if there is at least one numeric metric to report
+        if self.accelerator.is_main_process and reduced:
           wandb.log(reduced, step=step)
 
     def __del__(self):
