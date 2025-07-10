@@ -256,6 +256,7 @@ class Solver(object):
             data_loader = tqdm(data_loader)
 
         for idx, sources in enumerate(data_loader):
+            global_step = epoch * len(data_loader) + idx
             sources = sources.to(self.device)
             if train:
                 sources = self.augment(sources)
@@ -310,23 +311,23 @@ class Solver(object):
                 self.optimizer.zero_grad()
                 for ema in self.emas['batch']:
                     ema.update()
-                if self.config.save_every and (idx+1) % self.config.save_every == 0:
-                    self._serialize(epoch, idx+1)
+                if self.config.save_every and (global_step+1) % self.config.save_every == 0:
+                    self._serialize(epoch, steps = global_step+1)
             
-            if train and (idx+1) % self.config.log_every == 0:
-                self._log_wandb(losses, step=epoch * len(data_loader) + idx, prefix="train_nonavg/")
+            if train and (global_step+1) % self.config.log_every == 0:
+                self._log_wandb(losses, step=global_step, prefix="train_nonavg/")
 
             losses = averager(losses)
 
-            if train and (idx+1) % self.config.log_every == 0:
-                self._log_wandb(losses, step=epoch * len(data_loader) + idx, prefix="train/")
+            if train and (global_step+1) % self.config.log_every == 0:
+                self._log_wandb(losses, step=global_step, prefix="train/")
                 formatted = self._format_train(losses)
                 logger.info(
-                    f'Train Summary | Epoch {epoch + 1} | Step {idx+1} | {_summary(formatted)}')
+                    f'Train Summary | Epoch {epoch + 1} | Step {idx+1} | Global Step {global_step+1} | {_summary(formatted)}')
 
             del loss, estimate
 
-            if (idx+1) % self.config.val_every == 0 and train:
+            if (global_step+1) % self.config.val_every == 0 and train:
                 self.model.eval()  # Turn off Batchnorm & Dropout
                 metrics = {}
                 with torch.no_grad():
@@ -353,12 +354,11 @@ class Solver(object):
 
                 formatted = self._format_train(metrics['valid'])
                 logger.info(
-                    f'Valid Summary | Epoch {epoch + 1} | Step {idx+1} | {_summary(formatted)}')
-                self._log_wandb(metrics['valid']['main'], step=epoch * len(data_loader) + idx, prefix="valid/")
+                    f'Valid Summary | Epoch {epoch + 1} | Step {idx+1} | Global Step {global_step+1} | {_summary(formatted)}')
+                self._log_wandb(metrics['valid']['main'], step=global_step, prefix="valid/")
                 
                 if self.audio_log:
                     # Log fixed audio samples
-                    global_step = epoch * len(data_loader) + idx
                     self._log_audio_samples(global_step)
                 self.model.train()
             
