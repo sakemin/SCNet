@@ -1,25 +1,21 @@
 data:
-  multi_root: false
-  wav: /home/kof008/scnet_full_dataset/
+  multi_root: true
+  wav: ['/data3/ORIGINAL_DATA/beatpulse_audio', '/data3/ORIGINAL_DATA/beatpulse_audio_1992', '/data3/ORIGINAL_DATA/beatpulse_audio_904', '/data3/ORIGINAL_DATA/pointune_audio']
   samplerate: 44100
   segment: 11
   shift: 0.5
   channels: 2
   normalize: true
   metadata: ./metadata
-  sources: ['drums', 'bass', 'other', 'vocals']
+  sources: ['high', 'mid', 'low', 'rhythm', 'melody']
   toothless: 'replace' # 'replace' or 'zero'
-  replace_silence: true
-  replace_silence_prob: 0.5
-  noise_inject: false
-  noise_inject_prob: 1.0
 
 ema:
   epoch: [0.9, 0.95]
   batch: [0.9995, 0.9999]
 
 model:
-  sources: ['drums', 'bass', 'other', 'vocals']
+  sources: ['high', 'mid', 'low', 'rhythm', 'melody']
   audio_channels: 2
   # Main structure
   dims: [4, 64, 128, 256]
@@ -53,14 +49,14 @@ optim:
   weight_decay: 0
 
 seed: 42
-save_every: 25000
+save_every: 50000
 log_every: 100
-val_every: 5000
+val_every: 10000
 
 augment:
   shift_same: false
   remix:
-    proba: 1.0
+    proba: 0.3
     group_size: 3
   scale:
     proba: 1
@@ -70,12 +66,3 @@ augment:
 
 misc:
   num_workers: 10
-
-audio_log:
-  enable: True
-  samples: ['nucksal-money-song1', 'djrootplant-urban-song1', 'yunb-lost-song1']
-  root: /home/kof008/scnet_full_dataset/valid
-  segment: 11
-  start: 30
-  use_mp3: True
-  mp3_bitrate: 192k
