@@ -22,7 +22,7 @@ def convert_audio_channels(wav, channels=2):
         if src_channels > 1:
             wav = wav.mean(dim=-2, keepdim=True)
     elif src_channels == 1:
-        wav = wav.expand(-1, channels, -1)
+        wav = torch.cat([wav] * channels, dim=-2)
     elif src_channels >= channels:
         wav = wav[..., :channels, :]
     else:
