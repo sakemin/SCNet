@@ -12,9 +12,11 @@ dependencies = [
     "jupyter>=1.1.1",
     "ml-collections==0.1.1",
     "numpy>=1.26.4",
+    "pydub>=0.25.1",
     "pyyaml>=6.0.2",
     "soundfile==0.12.1",
     "torch==2.0.1",
     "torchaudio==2.0.2",
     "tqdm>=4.67.1",
+    "wandb>=0.21.0",
 ]
