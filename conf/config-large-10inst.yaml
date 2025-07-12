@@ -9,8 +9,8 @@ data:
   metadata: ./metadata
   sources: ['percussion', 'string', 'fretted', 'wind', 'brass', 'keyboard', 'electronic', 'vocal', 'fx', 'misc']
   toothless: 'replace' # 'replace' or 'zero'
-  replace_silence: false
-  replace_silence_prob: 0.9
+  replace_silence: true
+  replace_silence_prob: 0.75
   noise_inject: false
   noise_inject_prob: 1.0
 
@@ -69,11 +69,10 @@ augment:
   flip: true
 
 misc:
-  num_workers: 2
-  persistent_workers: True
+  num_workers: 10
 
 audio_log:
-  enable: False
+  enable: True
   samples: ["pointune_000466_Scandal/__10_inst_files__", "pointune_000833_desert_god/__10_inst_files__", "pointune_000710_no_problem/__10_inst_files__", "pointune_000813_jungle/__10_inst_files__"]
   root: /opt/dlami/nvme/sake/10_inst_datasets/pointune_10insts
   segment: 11
