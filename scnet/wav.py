@@ -530,7 +530,9 @@ class MultiRootWavset:
                             rand_root, rand_name, rand_seg, src_mean, src_std = random.choice(cands)
                             rand_meta = self.metadatas[rand_root][rand_name]
                             rand_file = self.get_file(rand_root, rand_name, source)
-                            rand_offset = int(rand_meta['samplerate'] * self.shift * rand_seg)
+                            rand_offset = 0
+                            if self.segment is not None:
+                                rand_offset = int(rand_meta['samplerate'] * self.shift * rand_seg)
                             wav, _ = ta.load(str(rand_file), frame_offset=rand_offset, num_frames=num_frames)
                             wav = convert_audio_channels(wav, self.channels)
                             if src_std > 0:
@@ -562,10 +564,9 @@ class MultiRootWavset:
                             rand_file = self.get_file(rand_root, rand_name, source)
                             if rand_file is None or not os.path.exists(rand_file):
                                 continue
+                            rand_offset = 0
                             if self.segment is not None:
                                 rand_offset = int(rand_meta['samplerate'] * self.shift * rand_seg)
-                            else:
-                                rand_offset = 0
                             wav, _ = ta.load(str(rand_file), frame_offset=rand_offset, num_frames=num_frames)
                             if rand_meta['samplerate'] != meta['samplerate']:
                                 wav = julius.resample_frac(wav, rand_meta['samplerate'], meta['samplerate'])
