@@ -69,8 +69,15 @@ class Solver(object):
         self.augment = torch.nn.Sequential(*augments)
 
         if self.accelerator.is_main_process:
-            self.run = wandb.init(entity='sakemin', project='scnet' if not config.data.multi_root else 'scnet-10insts')
-            wandb.config.update(config)
+            
+            # Convert ConfigDict to a plain Python dict for cleaner logging on WandB
+            wandb_config = config.to_dict() if hasattr(config, 'to_dict') else dict(config)
+            self.run = wandb.init(
+                entity='sakemin',
+                project='scnet' if not config.data.multi_root else 'scnet-10insts',
+                config=wandb_config
+            )
+            # wandb.config.update(config)
 
         # Broadcast the checkpoint directory path from the main process to all others
         if self.accelerator.is_main_process:
