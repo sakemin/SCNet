@@ -304,6 +304,8 @@ def get_wav_datasets(args):
         valids = {}
         for wav in args.wav:
             sig = hashlib.sha1(str(wav).encode()).hexdigest()[:8]
+            print(f"Dataset: {wav}")
+            print(f"Sig: {sig}")
             metadata_file = Path(args.metadata) / ('wav_' + sig + ".json")
             if not metadata_file.is_file() and accelerator.is_main_process:
                 metadata_file.parent.mkdir(exist_ok=True, parents=True)
