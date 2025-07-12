@@ -49,16 +49,15 @@ def get_solver(args):
     train_set, valid_set = get_wav_datasets(config.data)
 
     logger.info("train/valid set size: %d %d", len(train_set), len(valid_set))
-    prefetch_factor = config.misc.get('prefetch_factor', 2)
     persistent_workers = config.misc.get('persistent_workers', False)
     train_loader = DataLoader(
         train_set, batch_size=config.batch_size, shuffle=True,
-        num_workers=config.misc.num_workers, drop_last=True, pin_memory=True, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers)
+        num_workers=config.misc.num_workers, drop_last=True, pin_memory=True, persistent_workers=persistent_workers)
     train_loader = accelerator.prepare_data_loader(train_loader)
 
     valid_loader = DataLoader(
         valid_set, batch_size=1, shuffle=False,
-        num_workers=config.misc.num_workers, pin_memory=True, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers)
+        num_workers=config.misc.num_workers, pin_memory=True, persistent_workers=persistent_workers)
     valid_loader = accelerator.prepare_data_loader(valid_loader)
 
     loaders = {"train": train_loader, "valid": valid_loader}
