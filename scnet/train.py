@@ -5,6 +5,7 @@ from .wav import get_wav_datasets
 from .SCNet import SCNet
 from .solver import Solver
 import argparse
+import sys
 import yaml
 from ml_collections import ConfigDict
 from accelerate import Accelerator
@@ -49,15 +50,15 @@ def get_solver(args):
     train_set, valid_set = get_wav_datasets(config.data)
 
     logger.info("train/valid set size: %d %d", len(train_set), len(valid_set))
-    persistent_workers = config.misc.get('persistent_workers', False)
+    
     train_loader = DataLoader(
         train_set, batch_size=config.batch_size, shuffle=True,
-        num_workers=config.misc.num_workers, drop_last=True, pin_memory=True, persistent_workers=persistent_workers)
+        num_workers=config.misc.num_workers, drop_last=True, pin_memory=True)
     train_loader = accelerator.prepare_data_loader(train_loader)
 
     valid_loader = DataLoader(
         valid_set, batch_size=1, shuffle=False,
-        num_workers=config.misc.num_workers, pin_memory=True, persistent_workers=persistent_workers)
+        num_workers=config.misc.num_workers, pin_memory=True)
     valid_loader = accelerator.prepare_data_loader(valid_loader)
 
     loaders = {"train": train_loader, "valid": valid_loader}
@@ -71,6 +72,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--save_path", type=str, default='./result/', help="path to config file")
     parser.add_argument("--config_path", type=str, default='./conf/config.yaml', help="path to save checkpoint")
+    parser.add_argument("--wandb_path", type=str, default=None, help="Path to an existing W&B run directory to resume from")
     args = parser.parse_args()
 
     if not os.path.exists(args.save_path):

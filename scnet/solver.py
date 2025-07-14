@@ -42,6 +42,9 @@ class Solver(object):
         self.accelerator = Accelerator()
         self.scaler = GradScaler()
 
+        # Initialize global step before potential checkpoint loading
+        self.global_step = 0
+
         self.stft_config = {
             'n_fft': config.model.nfft,
             'hop_length': config.model.hop_size,
@@ -73,11 +76,24 @@ class Solver(object):
             
             # Convert ConfigDict to a plain Python dict for cleaner logging on WandB
             wandb_config = config.to_dict() if hasattr(config, 'to_dict') else dict(config)
-            self.run = wandb.init(
+            wandb_init_kwargs = dict(
                 entity='sakemin',
                 project='scnet' if not config.data.multi_root else 'scnet-10insts',
                 config=wandb_config
             )
+
+            # If resuming from an existing W&B run, extract run id and enable resume mode
+            if hasattr(args, 'wandb_path') and args.wandb_path:
+                run_path = Path(args.wandb_path)
+                # Expected directory name like 'run-YYYYMMDD_HHMMSS-<id>' → take the last dash-separated token as id
+                run_id = run_path.name.split('-')[-1]
+                wandb_init_kwargs.update({
+                    'id': run_id,
+                    'resume': 'must',
+                    'dir': str(run_path.parent)  # base dir for run artifacts
+                })
+
+            self.run = wandb.init(**wandb_init_kwargs)
             # wandb.config.update(config)
 
         # Broadcast the checkpoint directory path from the main process to all others
@@ -94,6 +110,25 @@ class Solver(object):
 
         self.checkpoint_file = Path(run_dir) / 'checkpoints' / 'checkpoint.th'
 
+        # Determine checkpoint to resume from if user provided a WandB run path
+        self.resume_checkpoint_file = None
+        if hasattr(args, 'wandb_path') and args.wandb_path:
+            if self.accelerator.is_main_process:
+                candidate_dir = Path(args.wandb_path)
+                # Prefer files/checkpoints → checkpoints → provided directory
+                if (candidate_dir / 'files' / 'checkpoints').exists():
+                    search_dir = candidate_dir / 'files' / 'checkpoints'
+                elif (candidate_dir / 'checkpoints').exists():
+                    search_dir = candidate_dir / 'checkpoints'
+                else:
+                    search_dir = candidate_dir
+                self.resume_checkpoint_file = self._find_latest_checkpoint(search_dir)
+            # Sync the selected checkpoint path across all processes
+            if self.accelerator.state.distributed_type != DistributedType.NO and dist.is_initialized():
+                obj_list = [str(self.resume_checkpoint_file) if self.resume_checkpoint_file else ""]
+                dist.broadcast_object_list(obj_list, src=0)
+                self.resume_checkpoint_file = Path(obj_list[0]) if obj_list[0] else None
+
         # Checkpoint states
         self.best_state = None
         self.best_nsdr = 0
@@ -101,8 +136,9 @@ class Solver(object):
 
         if self.accelerator.is_main_process:
             self.checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
-            self._reset()
-        
+
+        # Call _reset on all processes so attributes like global_step exist everywhere
+        self._reset()
         self.mp3_temp_files = []  # keep track of temporary mp3 files to delete later
         # Audio logging configuration (optional)
         self.audio_log = False
@@ -131,19 +167,55 @@ class Solver(object):
         else:
             self.accelerator.save(package, self.checkpoint_file)
 
+    def _find_latest_checkpoint(self, ckpt_dir):
+        """Return the most recently modified checkpoint file (.th) inside `ckpt_dir`, or None."""
+        ckpt_dir = Path(ckpt_dir)
+        if not ckpt_dir.exists():
+            return None
+        candidates = sorted(ckpt_dir.glob('checkpoint*.th'), key=lambda p: p.stat().st_mtime, reverse=True)
+        return candidates[0] if candidates else None
+
+    def _parse_epoch_step_from_filename(self, path):
+        """Extract (epoch, step) from filenames like 'checkpoint_E_S.th'. Returns (epoch_zero_based, step_zero_based) or (None, None)."""
+        name = Path(path).stem  # Strip directory and extension
+        parts = name.split('_')
+        if len(parts) >= 3 and parts[0] == 'checkpoint':
+            try:
+                epoch_1b = int(parts[1])  # 1-based epoch stored in filename
+                step_1b = int(parts[2])   # 1-based global step stored in filename
+                return epoch_1b - 1, step_1b - 1  # convert to 0-based
+            except ValueError:
+                pass
+        return None, None
+
     def _reset(self):
         """Reset state of the solver, potentially using checkpoint."""
-        if self.checkpoint_file.exists():
-            logger.info(f'Loading checkpoint model: {self.checkpoint_file}')
-            package = torch.load(self.checkpoint_file, map_location=self.accelerator.device)
+        ckpt_path = getattr(self, 'resume_checkpoint_file', None) or self.checkpoint_file
+        if ckpt_path.exists():
+            logger.info(f'Loading checkpoint model: {ckpt_path}')
+            package = torch.load(ckpt_path, map_location=self.accelerator.device)
             self.model.load_state_dict(package['state'])
             self.best_nsdr = package['best_nsdr']
             self.best_state = package['best_state']
             self.optimizer.load_state_dict(package['optimizer'])
-            self.epoch = package['epoch']
+            self.epoch = package['epoch'] - 1
             for kind, emas in self.emas.items():
                 for k, ema in enumerate(emas):
                     ema.load_state_dict(package[f'ema_{kind}_{k}'])
+            # Derive global step from filename, fallback to epoch-based estimate
+            ep, st = self._parse_epoch_step_from_filename(ckpt_path)
+            if st is not None:
+                self.global_step = st + 1  # resume *after* the saved step
+            else:
+                # Assume completed whole epochs up to self.epoch
+                self.global_step = (self.epoch + 1) * len(self.loaders['train'])
+        else:
+            # Fresh start
+            self.epoch = -1
+            self.global_step = 0
+        # Ensure global_step is defined even if _reset didn't set it (e.g., fresh run)
+        if not hasattr(self, 'global_step'):
+            self.global_step = 0
 
     def _format_train(self, metrics: dict) -> dict:
         """Formatting for train/valid metrics."""
@@ -231,7 +303,7 @@ class Solver(object):
                 
             # Log validation metrics (numeric only) averaged across GPUs
             numeric_valid = {k: v for k, v in metrics['valid'].items() if isinstance(v, (int, float, torch.Tensor))}
-            self._log_wandb(numeric_valid, prefix='valid/')
+            self._log_wandb(numeric_valid, prefix='valid/', step=self.global_step)
 
             # Also log the epoch number at the same step
             self._log_wandb({"epoch": epoch + 1})
@@ -265,7 +337,7 @@ class Solver(object):
             data_loader = tqdm(data_loader)
 
         for idx, sources in enumerate(data_loader):
-            global_step = epoch * len(data_loader) + idx
+            global_step = self.global_step
             sources = sources.to(self.device)
             if train:
                 sources = self.augment(sources)
@@ -370,7 +442,10 @@ class Solver(object):
                     # Log fixed audio samples
                     self._log_audio_samples(global_step)
                 self.model.train()
-            
+ 
+            # Advance global step counter after each training batch
+            if train:
+                self.global_step += 1
         if train:
             for ema in self.emas['epoch']:
                 ema.update()
