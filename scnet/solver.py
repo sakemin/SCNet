@@ -17,6 +17,7 @@ import torchaudio
 import tempfile
 from pydub import AudioSegment
 import torch.distributed as dist
+from .wav import SOURCE_VARIATIONS  # Variants of source filenames
 
 def _summary(metrics):
     return " | ".join(f"{key.capitalize()}={val}" for key, val in metrics.items())
@@ -386,32 +387,46 @@ class Solver(object):
             mixture_path = track_dir / 'mixture.wav'
             if not mixture_path.exists():
                 continue
+
             # Load mixture
             mix, sr = torchaudio.load(str(mixture_path))  # shape (C, T)
+            
+            # Normalize mixture
+            mix = mix / (mix.abs().max() + 1e-8)
+
             start_sample = int(self.audio_log_start * sr)
             end_sample = start_sample + int(self.audio_log_segment * sr)
             mix_seg = mix[:, start_sample:end_sample]
+
             mix_tensor = mix_seg.unsqueeze(0).to(self.device)
             with torch.no_grad():
                 est = apply_model(self.model, mix_tensor, split=False, overlap=0)
             est = est[0].cpu()  # (sources, C, T)
-            # Save mixture to temporary wav before optional mp3 conversion
-            tmp_mix_wav = tempfile.mktemp(suffix='.wav')
-            sf.write(tmp_mix_wav, mix_seg.T.numpy(), sr)
-            if self.audio_log_use_mp3:
-                mix_path = _convert_to_mp3(tmp_mix_wav, self.audio_log_mp3_bitrate)
-                self.mp3_temp_files.append(mix_path)
-                os.remove(tmp_mix_wav)
-            else:
-                mix_path = tmp_mix_wav
-            wandb.log({f"audio_eval/{sample_name}/mixture": wandb.Audio(mix_path, caption="Mixture", sample_rate=sr)}, step=step)
-            if not self.audio_log_use_mp3:
-                self.mp3_temp_files.append(mix_path)
+
+            if step + 1 == self.config.log_every:
+                # Save mixture to temporary wav before optional mp3 conversion
+                tmp_mix_wav = tempfile.mktemp(suffix='.wav')
+                sf.write(tmp_mix_wav, mix_seg.T.numpy(), sr)
+                if self.audio_log_use_mp3:
+                    mix_path = _convert_to_mp3(tmp_mix_wav, self.audio_log_mp3_bitrate)
+                    self.mp3_temp_files.append(mix_path)
+                    os.remove(tmp_mix_wav)
+                else:
+                    mix_path = tmp_mix_wav
+                wandb.log({f"audio_eval/{sample_name}/mixture": wandb.Audio(mix_path, caption="Mixture", sample_rate=sr)}, step=step)
+                if not self.audio_log_use_mp3:
+                    self.mp3_temp_files.append(mix_path)
             # Iterate over sources
             for src_idx, source in enumerate(self.config.model.sources):
-                gt_path = track_dir / f"{source}.wav"
+                # Resolve ground-truth file, considering filename variations
+                gt_path = None
+                for fname in [f"{source}.wav"] + SOURCE_VARIATIONS.get(source, []):
+                    candidate = track_dir / fname
+                    if candidate.exists():
+                        gt_path = candidate
+                        break
                 gt_audio = None
-                if gt_path.exists():
+                if gt_path is not None:
                     gt, _ = torchaudio.load(str(gt_path))
                     gt_audio = gt[:, start_sample:end_sample].numpy()
                 pred_audio = est[src_idx].numpy()
