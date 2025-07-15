@@ -87,10 +87,17 @@ class Solver(object):
                 run_path = Path(args.wandb_path)
                 # Expected directory name like 'run-YYYYMMDD_HHMMSS-<id>' → take the last dash-separated token as id
                 run_id = run_path.name.split('-')[-1]
+                # W&B always creates a 'wandb' subfolder inside the directory provided via `dir`.
+                # If we pass run_path.parent (which is already '<root>/wandb'), we end up with
+                # '<root>/wandb/wandb'. Instead, pass the *root* directory that contains the first
+                # 'wandb' folder so paths align with the existing run directory.
+                base_dir = run_path.parent
+                if base_dir.name == 'wandb':
+                    base_dir = base_dir.parent  # strip the extra 'wandb'
                 wandb_init_kwargs.update({
                     'id': run_id,
                     'resume': 'must',
-                    'dir': str(run_path.parent)  # base dir for run artifacts
+                    'dir': str(base_dir)
                 })
 
             self.run = wandb.init(**wandb_init_kwargs)
