@@ -473,8 +473,9 @@ class Solver(object):
             # Load mixture
             mix, sr = torchaudio.load(str(mixture_path))  # shape (C, T)
             
+            abs_max = mix.abs().max()
             # Normalize mixture
-            mix = mix / (mix.abs().max() + 1e-8)
+            mix = mix / (abs_max + 1e-8)
 
             start_sample = int(self.audio_log_start * sr)
             end_sample = start_sample + int(self.audio_log_segment * sr)
@@ -510,6 +511,7 @@ class Solver(object):
                 gt_audio = None
                 if gt_path is not None:
                     gt, _ = torchaudio.load(str(gt_path))
+                    gt = gt / (abs_max + 1e-8) # normalize ground truth with mixture abs_max
                     gt_audio = gt[:, start_sample:end_sample].numpy()
                 pred_audio = est[src_idx].numpy()
                 # Prepare WandB Audio objects (optionally convert to mp3)
