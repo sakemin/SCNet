@@ -166,3 +166,7 @@ checkpoints/
 block_ckpts/
 
 dropbox.py
+
+*.ipynb
+*.yaml
+metadata/*
