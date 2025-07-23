@@ -1,0 +1,26 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SCNet Training Debug",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "scnet.train",
+      "console": "integratedTerminal",
+      "cwd": "/home/sake/repos/SCNet",
+      "env": {
+        "NCCL_P2P_DISABLE": "1",
+        "NCCL_IB_DISABLE": "1"
+      },
+      "args": [
+        "--config_path",
+        "./conf/config-large-10inst.yaml",
+        "--save_path",
+        "dummy"
+      ]
+    }
+  ]
+}
