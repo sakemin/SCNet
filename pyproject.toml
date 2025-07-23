@@ -10,6 +10,7 @@ dependencies = [
     "ipykernel>=6.29.5",
     "julius==0.2.7",
     "jupyter>=1.1.1",
+    "matplotlib>=3.10.3",
     "ml-collections==0.1.1",
     "numpy>=1.26.4",
     "pydub>=0.25.1",
