@@ -129,7 +129,7 @@ def scan_root(root: Path, sources, segment, shift, threshold=0.8, ext='.wav', nu
 def main():
     p = argparse.ArgumentParser(description='Precompute non-silent segment index for SCNet datasets.')
     p.add_argument('--root', nargs='+', help='Dataset root folder(s)')
-    p.add_argument('--sources', nargs='+', help='Source names to analyse')
+    p.add_argument('--sources', nargs='+', default=['percussion', 'string', 'fretted', 'wind', 'brass', 'keyboard', 'electronic', 'vocal', 'fx', 'misc'], help='Source names to analyse')
     p.add_argument('--segment', type=float, default=11, help='Segment length (seconds)')
     p.add_argument('--shift', type=float, default=0.5, help='Shift/stride between segments (seconds)')
     p.add_argument('--threshold', type=float, default=0.8, help='Non-zero ratio threshold')
@@ -138,8 +138,8 @@ def main():
     p.add_argument('--output', default='non_silent_segments.json', help='Output file name placed inside each root')
     args = p.parse_args()
 
-    if not args.root or not args.sources:
-        print("--root and --sources must be provided.")
+    if not args.root:
+        print("--root must be provided.")
         return
 
     for r in args.root:
