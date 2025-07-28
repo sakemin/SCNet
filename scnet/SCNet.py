@@ -65,7 +65,7 @@ class FusionLayer(nn.Module):
 
     def forward(self, x, skip=None):
         if skip is not None:
-            x += skip
+            x = x + skip
         x = x.repeat(1, 2, 1, 1)
         x = self.conv(x)
         x = F.glu(x, dim=1)
@@ -264,7 +264,7 @@ class SCNet(nn.Module):
                  # Dual-path RNN
                  num_dplayer = 6,
                  expand = 1,
-                ):
+                 **kwargs):
         super().__init__()
         self.sources = sources
         self.audio_channels = audio_channels
@@ -314,6 +314,10 @@ class SCNet(nn.Module):
             num_layers = num_dplayer,
         )        
 
+        # Auxiliary presence detection head (binary classification per source)
+        # Uses global pooled features after the dual-path separation module.
+        self.presence_head = nn.Linear(dims[-1], len(self.sources))
+
         
     def forward(self, x):
         # B, C, L = x.shape
@@ -347,8 +351,14 @@ class SCNet(nn.Module):
             save_lengths.append(lengths)
             save_original_lengths.append(original_lengths)
 
-        #separation
+        # Separation branch
         x = self.separation_net(x)
+
+        # ----- Auxiliary presence detection -----
+        # Global average pooling over frequency/time followed by linear projection.
+        # debug removed
+        pooled = x.mean(dim=(2, 3))  # shape (B, dims[-1])
+        presence_logits = self.presence_head(pooled)
 
         #decoder
         for fusion_layer, su_layer in self.decoder:
@@ -365,5 +375,6 @@ class SCNet(nn.Module):
         x = x.reshape(B, len(self.sources), self.audio_channels, -1)
     
         x = x[:, :, :, :-padding]
-        
-        return x
+
+        # Return both separated stems and presence logits
+        return x, presence_logits

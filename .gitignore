@@ -170,3 +170,6 @@ dropbox.py
 *.ipynb
 *.yaml
 metadata/*
+
+inferenced/*
+test_mixtures/*

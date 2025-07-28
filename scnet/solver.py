@@ -4,7 +4,8 @@ from .utils import copy_state, EMA, new_sdr
 from .apply import apply_model
 from .ema import ModelEMA
 from . import augment
-from .loss import spec_rmse_loss
+from .loss import spec_rmse_loss, spec_rmse_loss_masked
+import torch.nn.functional as F
 from tqdm import tqdm
 from .log import logger
 from accelerate import Accelerator
@@ -345,6 +346,26 @@ class Solver(object):
 
         for idx, sources in enumerate(data_loader):
             global_step = self.global_step
+
+            # --------- Curriculum: adjust max active sources ---------
+            curriculum_cfg = getattr(self.config, 'curriculum', None)
+            if curriculum_cfg and hasattr(curriculum_cfg, 'active_sources'):
+                sched = None
+                # Prefer step-based schedule
+                if hasattr(curriculum_cfg.active_sources, 'step_schedule'):
+                    sched = getattr(curriculum_cfg.active_sources, 'step_schedule')
+                elif hasattr(curriculum_cfg.active_sources, 'max_schedule'):
+                    sched = getattr(curriculum_cfg.active_sources, 'max_schedule')
+                if sched:
+                    current_max = None
+                    for step_thr, max_src in sched:
+                        if global_step >= step_thr:
+                            current_max = max_src
+                    if current_max is not None:
+                        tr_dataset = self.loaders['train'].dataset
+                        if hasattr(tr_dataset, 'max_active_sources'):
+                            tr_dataset.max_active_sources = int(current_max)
+
             sources = sources.to(self.device)
             if train:
                 sources = self.augment(sources)
@@ -355,17 +376,48 @@ class Solver(object):
 
             if not train:
                 estimate = apply_model(self.model, mix, split=True, overlap=0)
+                logits = None
             else:
                 with autocast():
-                   estimate = self.model(mix)
+                    est_out = self.model(mix)
+                # Model returns (stems, presence_logits)
+                estimate, logits = est_out if isinstance(est_out, (tuple, list)) else (est_out, None)
 
             assert estimate.shape == sources.shape, (estimate.shape, sources.shape)
 
-            loss = spec_rmse_loss(estimate, sources, self.stft_config)
+            # ------------------ Losses ------------------
+            presence_mask = (sources.abs().sum(dim=(2, 3)) > 1e-6).float()  # (B, S)
+
+            if train:
+                # Separation loss (masked)
+                absent_w = getattr(self.config.loss, 'absent_weight', 0.05) if hasattr(self.config, 'loss') else 0.05
+                sep_loss = spec_rmse_loss_masked(estimate, sources, self.stft_config, presence_mask, absent_weight=absent_w)
+
+                # Classification loss (positive-only BCE)
+                if logits is not None:
+                    bce = F.binary_cross_entropy_with_logits(logits, presence_mask, reduction='none')
+                    cls_loss = (bce * presence_mask).sum() / (presence_mask.sum() + 1e-8)
+                else:
+                    cls_loss = torch.tensor(0.0, device=self.device)
+
+                base_detect_weight = getattr(self.config.model, 'detection_weight', 0.1)
+                ramp_steps = getattr(self.config.model, 'detection_ramp_steps', None)
+                if ramp_steps is None:
+                    ramp_steps = getattr(self.config.model, 'detection_ramp_epochs', 0) * len(self.loaders['train'])
+                if ramp_steps and ramp_steps > 0:
+                    detect_weight = base_detect_weight * min(1.0, global_step / ramp_steps)
+                else:
+                    detect_weight = base_detect_weight
+                loss = sep_loss + detect_weight * cls_loss
+            else:
+                loss = spec_rmse_loss(estimate, sources, self.stft_config)
 
             losses = {}
 
             losses['loss'] = loss
+            if train:
+                losses['sep_loss'] = sep_loss
+                losses['cls_loss'] = cls_loss
             if not train:
                 nsdrs = new_sdr(sources, estimate.detach()).mean(0)
                 nsdrs = self.accelerator.reduce(nsdrs, reduction="mean")

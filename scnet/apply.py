@@ -148,5 +148,7 @@ def apply_model(model, mix, shifts=1, split=True, segment=20, samplerate=44100,
         mix = tensor_chunk(mix)
         padded_mix = mix.padded(length).to(device)
         with th.no_grad():
-            out = model(padded_mix)
+            result = model(padded_mix)
+            # Model might return (stems, aux) – we only need separated stems for inference.
+            out = result[0] if isinstance(result, (tuple, list)) else result
         return center_trim(out, length)

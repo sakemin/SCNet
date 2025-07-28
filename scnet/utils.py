@@ -41,7 +41,7 @@ def convert_audio(wav, from_samplerate, to_samplerate, channels):
 
 
 # model
-def load_model(model, checkpoint_path):
+def load_model(model, checkpoint_path, use_best_state=False):
         checkpoint_path = Path(checkpoint_path)
 
         if not checkpoint_path.exists():
@@ -49,10 +49,11 @@ def load_model(model, checkpoint_path):
 
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
 
-        if 'best_state' not in checkpoint:
-            raise KeyError(f"Checkpoint does not contain the state")
+        if use_best_state:
+            state_dict = checkpoint['best_state']
+        else:
+            state_dict = checkpoint['state']
             
-        state_dict = checkpoint['best_state']
         new_state_dict = {}
         for k, v in state_dict.items():
             if k.startswith('module.'):

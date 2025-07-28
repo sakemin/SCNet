@@ -13,8 +13,8 @@ import yaml
 
 
 class Seperator:
-    def __init__(self, model, checkpoint_path):
-        self.separator = load_model(model, checkpoint_path)
+    def __init__(self, model, checkpoint_path, use_best_state=False):
+        self.separator = load_model(model, checkpoint_path, use_best_state)
 
         if torch.cuda.device_count():
             self.device = torch.device('cuda')
@@ -25,7 +25,7 @@ class Seperator:
 
     @property
     def instruments(self):
-        return ['bass', 'drums', 'other', 'vocals']
+        return ['percussion', 'string', 'fretted', 'wind', 'brass', 'keyboard', 'electronic', 'vocal', 'fx', 'misc']
 
     def raise_aicrowd_error(self, msg):
         raise NameError(msg)
@@ -116,6 +116,7 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, help='Output directory to save separated sources')
     parser.add_argument('--config_path', type=str, default='./conf/config.yaml', help='Path to configuration file')
     parser.add_argument('--checkpoint_path', type=str, default='./result/checkpoint.th', help='Path to model checkpoint file')
+    parser.add_argument('--use_best_state', action='store_true', default=False, help='Use best state instead of last state')
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -128,5 +129,5 @@ if __name__ == "__main__":
 
     model = SCNet(**config.model)
     model.eval()
-    seperator = Seperator(model, args.checkpoint_path)
+    seperator = Seperator(model, args.checkpoint_path, args.use_best_state)
     seperator.process_directory(args.input_dir, args.output_dir)

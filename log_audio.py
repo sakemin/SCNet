@@ -253,11 +253,11 @@ def log_audio_comparison(original_dir, evaluation_results_dir, project_name="mus
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Log audio comparison to Wandb")
-    parser.add_argument('--original_dir', type=str, default="/home/kof008/custom_separation_dataset",
+    parser.add_argument('--original_dir', type=str, default="/home/sake/datasets/scnet_10insts",
                         help='Directory containing original audio files')
     parser.add_argument('--evaluation_dir', type=str, default="./evaluation_results",
                         help='Directory containing evaluation results (with checkpoint folders)')
-    parser.add_argument('--project', type=str, default="music-source-separation",
+    parser.add_argument('--project', type=str, default="scnet-10insts",
                         help='Wandb project name')
     parser.add_argument('--use_mp3', action='store_true', default=True,
                         help='Convert WAV files to MP3 before uploading (reduces size)')
