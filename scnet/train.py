@@ -65,7 +65,7 @@ def get_solver(args):
 
     model, optimizer = accelerator.prepare(model, optimizer)
     
-    return Solver(loaders, model, optimizer, config, args)
+    return Solver(loaders, model, optimizer, config, args, accelerator)
 
 
 def main():

@@ -24,22 +24,25 @@ EXT = ".wav"
 
 # Define possible variations for each source (for in-house dataset)
 SOURCE_VARIATIONS = {
-              'mixture': ['Mixed.wav', 'mixed.wav'],
+              'mixture': ['Mixed.wav', 'mixed.wav', 'mixture.wav'],
               'high': ['high.wav', 'HIGH.wav'],
               'mid': ['mid.wav', 'MID.wav'],
               'low': ['low.wav', 'LOW.wav'],
               'rhythm': ['rhythm.wav', 'Rhythm.wav', 'rhy.wav'],
               'melody': ['melody.wav', 'Melody.wav'],
               'fx': ['fx.wav', 'FX.wav'],
-              'percussion': ['Percussion_&_Drums.wav'],
+              'percussion': ['Percussion_&_Drums.wav', 'Percussion.wav'],
               'string': ['Strings_Instruments.wav'],
-              'fretted': ['Fretted_Instruments.wav'],
-              'vocal': ['Vocal_Elements.wav'],
+              'fretted': ['Fretted_Instruments.wav', 'Fretted.wav'],
+              'vocal': ['Vocal_Elements.wav', "Vocal.wav"],
               'wind': ['Wind_Instruments.wav'],
               'brass': ['Brass_Instruments.wav'],
               'keyboard': ['Keyboard_Instruments.wav'],
               'electronic': ['Electronic_&_Synthesized_Instruments.wav'],
-              'misc': ['Miscellaneous_Instruments_&_Effects.wav']
+              'misc': ['Miscellaneous_Instruments_&_Effects.wav'],
+              'synth_idiophone': ['Synth_&_Idiophone.wav'],
+              'string_brass_wind': ['String_&_Brass_&_Wind.wav'],
+              'bass': ['Bass.wav']
             }
 
 def _track_metadata(track, sources, normalize=True, ext=EXT, path_name=None):
@@ -50,7 +53,7 @@ def _track_metadata(track, sources, normalize=True, ext=EXT, path_name=None):
     source_length = {}
     source_filename = {}
     for source in [MIXTURE] + sources:
-        if path_name in ["beatpulse_audio", "beatpulse_audio_1992", "beatpulse_audio_904", "pointune_audio", "pointune_10insts", "beatpulse_10insts"]:
+        if path_name in ["beatpulse_audio", "beatpulse_audio_1992", "beatpulse_audio_904", "pointune_audio", "pointune_10insts", "beatpulse_10insts", "mixaudio_10insts", "beatpulse_6insts", "pointune_6insts", "mixaudio_6insts", "beatpulse_tracks", "seoul_pointune_839_tracks", "mixaudio_package_data_stems"]:
             # Find matching file for the source
             found_file = None
             if source in SOURCE_VARIATIONS:
@@ -64,8 +67,6 @@ def _track_metadata(track, sources, normalize=True, ext=EXT, path_name=None):
             if not found_file:
               # Default to original source name if no variant found
               file = track / f"{source}{ext}"
-        elif path_name in ["mixaudio_audio"]:
-            pass # TODO: implement mixaudio_audio
         else:
             file = track / f"{source}{ext}"
         if os.path.exists(file):
@@ -94,6 +95,23 @@ def _track_metadata(track, sources, normalize=True, ext=EXT, path_name=None):
                 wav = wav.mean(0)
                 mean = wav.mean().item()
                 std = wav.std().item()
+
+    if normalize and std == 1:
+        try:
+            combined = None
+            for src, fname in source_filename.items():
+                if src == MIXTURE: continue
+                w, _ = ta.load(str(track / fname))
+                if combined is None: combined = w
+                else:
+                    l = min(combined.shape[-1], w.shape[-1])
+                    combined = combined[..., :l] + w[..., :l]
+
+            if combined is not None:
+                ref = combined.mean(0)
+                mean = ref.mean().item()
+                std = ref.std().item()
+        except: pass
 
     return {"length": track_length, "mean": mean, "std": std, "samplerate": track_samplerate, "source_length": source_length, "source_filename": source_filename}
 
@@ -238,7 +256,7 @@ class Wavset:
                     wav = convert_audio_channels(wav, self.channels)
 
                 if self.replace_silence:
-                    if wav.count_nonzero() < 0.8 * wav.numel():
+                    if (wav.abs() > 10**(-60/20)).float().mean() < 0.3:
                         while 1:
                             random_name = random.choice(list(self.metadata.keys()))
                             random_file = self.get_file(random_name, source)
@@ -254,7 +272,7 @@ class Wavset:
                                     wav = julius.resample_frac(wav, random_meta['samplerate'], meta['samplerate'])
                                 wav = convert_audio_channels(wav, self.channels)
 
-                                if wav.count_nonzero() > 0.8 * wav.numel():
+                                if wav.count_nonzero() > 0.3 * wav.numel():
                                     break
 
                 wavs.append(wav)
@@ -271,7 +289,7 @@ class Wavset:
                 # Compute per-source non-zero counts
                 elems_per_src = example.shape[1] * example.shape[2]
                 nonzero_counts = example.ne(0).sum(dim=(1, 2))
-                silence_mask = nonzero_counts < 0.8 * elems_per_src  # boolean mask per source
+                silence_mask = nonzero_counts < 0.3 * elems_per_src  # boolean mask per source
 
                 if silence_mask.any() and random.random() < self.noise_inject_prob:
                     # Random std ∈ [3e-5, 9e-5] for each source
@@ -320,10 +338,10 @@ def get_wav_datasets(args):
         train_set = MultiRootWavset(args.wav, trains, args.sources,
                         segment=args.segment, shift=args.shift,
                         samplerate=args.samplerate, channels=args.channels,
-                        normalize=args.normalize)
+                        normalize=args.normalize, random_mix=True)
         valid_set = MultiRootWavset(args.wav, valids, [MIXTURE] + list(args.sources),
-                        samplerate=args.samplerate, channels=args.channels,
-                        normalize=args.normalize, **kw_cv)
+                        segment=args.segment, shift=args.shift, samplerate=args.samplerate, channels=args.channels,
+                        normalize=args.normalize, random_mix=False, random_mix_deterministic=True, **kw_cv)
 
     else:
         sig = hashlib.sha1(str(args.wav).encode()).hexdigest()[:8]
@@ -358,7 +376,9 @@ class MultiRootWavset:
             samplerate=44100, channels=2, ext=EXT,
             toothless='replace', noise_inject=False, noise_inject_prob=1.0,
             replace_silence=False, replace_silence_prob=1.0,
-            silence_file_name="non_silent_segments.json"):
+            silence_file_name="non_silent_segments.json",
+            random_mix=False,
+            random_mix_deterministic=False):
         """
         Waveset (or mp3 set for that matter). Can be used to train
         with arbitrary sources. Each track should be one folder inside of `path`.
@@ -395,8 +415,11 @@ class MultiRootWavset:
         self.noise_inject_prob = noise_inject_prob
         self.replace_silence = replace_silence
         self.replace_silence_prob = replace_silence_prob
-        # src -> track_path -> [segment_indices]
-        self.non_silent_segments_by_source = {src: {} for src in self.sources}
+
+        # Random mixing control
+        self.random_mix = random_mix
+        self.random_mix_deterministic = random_mix_deterministic
+        # Placeholder for backward compatibility (filled later; not used with on-the-fly logic)
 
         # Track path → root string (first occurrence). Used to resolve root later.
         self.track_to_root = {}
@@ -436,51 +459,95 @@ class MultiRootWavset:
 
             self.num_examples_per_dataset[r] = sum(self.num_examples[r])
 
-        # -------- Load precomputed silence index files --------
-        if self.replace_silence or self.toothless == 'replace':
-            for root in self.roots:
-                if accelerator.is_main_process:
-                    print(f"Loading silence index from {root}")
-                silence_path = Path(root) / self.silence_file_name
-                if not silence_path.is_file():
-                    if accelerator.is_main_process:
-                        print(f"[warn] Silence index not found for {root}: {silence_path}")
-                    continue
-                try:
-                    data = json.load(open(silence_path, "r"))
-                    for src, entries in data.items():
-                        if src not in self.sources:
-                            continue
-                        for entry in entries:  # each entry is {"track": str, "segments": [idx, ...]}
-                            track_name = entry.get("track")
-                            if track_name not in self.metadatas[str(root)]:
-                                continue  # ignore tracks not in current split
-                            seg_list = entry.get("segments", [])
-                            if not seg_list:
-                                continue
-                            # Store segments list
-                            self.non_silent_segments_by_source[src][track_name] = seg_list
-                except Exception as e:
-                    if accelerator.is_main_process:
-                        print(f"[warn] Failed loading silence index {silence_path}: {e}")
-            # print summary counts
-            if accelerator.is_main_process:
-                for s, d in self.non_silent_segments_by_source.items():
-                    total_segs = sum(len(v) for v in d.values())
-                    print(f"Loaded {total_segs} non-silent segments for source '{s}'.")
+        # -------- Precomputed silence indices not used anymore --------
+        # We previously loaded non-silent segment indices from JSON files and
+        # pre-populated ``self.valid_replacements``.  This logic has been
+        # replaced by on-the-fly silence detection (see ``_sample_non_silent_segment``),
+        # so we skip the expensive file IO.
+        self.non_silent_segments_by_source = {s: {} for s in self.sources}  # keep attribute for compatibility
+        self.valid_replacements = {s: [] for s in self.sources}  # no-op placeholder
 
-        # Pre-compute valid replacements for silence replacement
-        self.valid_replacements = {s: [] for s in self.sources}
-        for src, track_dict in self.non_silent_segments_by_source.items():
-            for t, segs in track_dict.items():
-                meta = self.metadatas[self.track_to_root[t]][t]
-                for sidx in segs:
-                    self.valid_replacements[src].append(
-                        (self.track_to_root[t], t, sidx, meta['mean'], meta['std'])
-                    )
+        # Curriculum: upper bound for active sources in random mixing
+        self.max_active_sources = len(self.sources)
+        self.min_active_sources = 2
+        
+        # --- On-the-fly silence detection parameters ---
+        # We treat any sample quieter than -60 dBFS as silence.
+        self._silence_amp_threshold = 10 ** (-60.0 / 20)  # linear amplitude for –60 dB
+        # A segment is considered "non-silent" if at least 30% of its samples exceed the threshold.
+        self._min_non_silent_ratio = 0.3
+        
+        # ------------------------------------------------------------------
 
     def __len__(self):
         return self.num_examples_total
+
+    # ------------------------------------------------------------------
+    # Helper utilities
+    # ------------------------------------------------------------------
+    def _sample_non_silent_segment(self, rng, source, max_attempts: int = 30):
+        """Randomly sample a (root, track, segment) triple for the given *source*
+        such that the selected audio segment is considered *non-silent*.
+
+        A segment is accepted if at least ``self._min_non_silent_ratio`` fraction
+        of its samples have an absolute amplitude greater than
+        ``self._silence_amp_threshold``. Returns a tuple ``(wav, meta)`` on
+        success, otherwise ``(None, None)`` if no suitable segment was found
+        within *max_attempts* tries.
+        """
+
+        for _ in range(max_attempts):
+            rand_root = rng.choice(self.roots)
+            rand_root_str = str(rand_root)
+            metadata_dict = self.metadatas[rand_root_str]
+
+            if not metadata_dict:
+                continue
+
+            rand_name = rng.choice(list(metadata_dict.keys()))
+            rand_meta = metadata_dict[rand_name]
+
+            # Skip tracks without the requested source
+            if source not in rand_meta.get('source_filename', {}):
+                continue
+
+            # Build full path to the audio file
+            rand_file = Path(rand_root) / rand_name / rand_meta['source_filename'][source]
+            if not rand_file.is_file():
+                continue
+
+            # Determine segment parameters
+            if self.segment is not None:
+                # Total number of possible segments for this track
+                track_dur = rand_meta['length'] / rand_meta['samplerate']
+                total_segs = max(
+                    1,
+                    int(math.ceil((track_dur - self.segment) / self.shift) + 1),
+                )
+                rand_seg = rng.randint(0, total_segs - 1)
+                offset = int(rand_meta['samplerate'] * self.shift * rand_seg)
+                num_frames = int(math.ceil(rand_meta['samplerate'] * self.segment))
+            else:
+                offset = 0
+                num_frames = -1
+
+            try:
+                wav, _ = ta.load(str(rand_file), frame_offset=offset, num_frames=num_frames)
+            except Exception:
+                continue  # corrupted file / read error – try another
+
+            wav = convert_audio_channels(wav, self.channels)
+
+            # Quick silence check
+            if wav.numel() == 0:
+                continue
+            if (wav.abs() > self._silence_amp_threshold).float().mean().item() < self._min_non_silent_ratio:
+                continue  # Too silent – search again
+
+            return wav, rand_meta  # Success
+
+        # Fallback: nothing found
+        return None, None
 
     def get_file(self, root, name, source):
         try:
@@ -490,6 +557,80 @@ class MultiRootWavset:
 
     def __getitem__(self, index):
         """Return one training example, mirroring the logic of ``Wavset.__getitem__``."""
+
+        # ---------------- Random cross-track mixing ----------------
+        # Instead of taking stems from the same track, we randomly sample
+        # individual segments for each source from the global non-silent pool.
+        # This behaviour creates mixtures containing 2-10 active instruments.
+
+        if self.random_mix:
+            if self.random_mix_deterministic:
+                rng = random.Random(index)
+            else:
+                rng = random
+            # Decide which sources are active between min_active_sources and max_active_sources
+            # upper = max(self.min_active_sources, min(self.max_active_sources, len(self.sources)))
+            # n_active = rng.randint(self.min_active_sources, upper)
+            # active_sources = rng.sample(self.sources, n_active)
+            active_sources = self.sources
+            num_frames = None
+            wavs = []
+
+            for source in self.sources:
+                if source in active_sources:
+                    wav, rand_meta = self._sample_non_silent_segment(rng, source)
+
+                    # If we failed to find a suitable segment, fallback to zeros
+                    if wav is None:
+                        if num_frames is None:
+                            if self.segment is not None:
+                                num_frames = int(math.ceil(self.samplerate * self.segment))
+                            else:
+                                num_frames = 1
+                        wavs.append(th.zeros(self.channels, num_frames))
+                        continue
+
+                    # Update num_frames lazily (first successful load)
+                    if num_frames is None:
+                        num_frames = wav.shape[-1]
+
+                    # Resample if needed
+                    if rand_meta['samplerate'] != self.samplerate:
+                        wav = julius.resample_frac(wav, rand_meta['samplerate'], self.samplerate)
+
+                    wav = convert_audio_channels(wav, self.channels)
+
+                    # Normalise for better source balance
+                    if self.normalize:
+                        src_mean = rand_meta.get('mean', 0.0)
+                        src_std = rand_meta.get('std', 1.0)
+                        denom = src_std if src_std > 1e-6 else 1.0
+                        wav = (wav - src_mean) / denom
+
+                    wavs.append(wav)
+                else:
+                    # Inactive source → zeros (masked in loss)
+                    if num_frames is None:
+                        if self.segment is not None:
+                            num_frames = int(math.ceil(self.samplerate * self.segment))
+                        else:
+                            num_frames = 1
+                    wavs.append(th.zeros(self.channels, num_frames))
+
+            # Ensure common length
+            min_length = min(w.shape[-1] for w in wavs)
+            wavs = [w[..., :min_length] for w in wavs]
+
+            example = th.stack(wavs)
+
+            # Final padding if shorter than desired segment length
+            if self.segment:
+                length = int(self.segment * self.samplerate)
+                example = F.pad(example, (0, length - example.shape[-1]))
+
+            return example
+
+        # ---------------- Original same-track logic (fallback) ----------------
         # Locate which dataset/root the global index falls into.
         target_root = None
         for root in self.roots:
@@ -525,19 +666,21 @@ class MultiRootWavset:
                     if self.toothless == 'zero':
                         wav = th.zeros(self.channels, num_frames)
                     elif self.toothless == 'replace':
-                        cands = self.valid_replacements[source]
-                        if cands:
-                            rand_root, rand_name, rand_seg, src_mean, src_std = random.choice(cands)
-                            rand_meta = self.metadatas[rand_root][rand_name]
-                            rand_file = self.get_file(rand_root, rand_name, source)
-                            rand_offset = 0
-                            if self.segment is not None:
-                                rand_offset = int(rand_meta['samplerate'] * self.shift * rand_seg)
-                            wav, _ = ta.load(str(rand_file), frame_offset=rand_offset, num_frames=num_frames)
-                            wav = convert_audio_channels(wav, self.channels)
-                            if src_std > 0:
-                                wav = (wav - src_mean) * (meta['std'] / src_std) + meta['mean']
-                        else:                                    # nothing for that source → zeros
+                        wav_rep, rep_meta = self._sample_non_silent_segment(random, source)
+                        if wav_rep is not None:
+                            # Match stats of replacement to target track
+                            if rep_meta['samplerate'] != meta['samplerate']:
+                                wav_rep = julius.resample_frac(wav_rep, rep_meta['samplerate'], meta['samplerate'])
+                            wav_rep = convert_audio_channels(wav_rep, self.channels)
+
+                            if self.normalize:
+                                src_mean = rep_meta.get('mean', 0.0)
+                                src_std = rep_meta.get('std', 1.0)
+                                target_mean, target_std = meta['mean'], meta['std']
+                                denom = src_std if src_std > 1e-6 else 1.0
+                                wav_rep = (wav_rep - src_mean) * (target_std / denom) + target_mean
+                            wav = wav_rep
+                        else:  # still nothing found → zeros
                             wav = th.zeros(self.channels, num_frames)
                     else:
                         raise ValueError(f"Invalid toothless value: {self.toothless}")
@@ -547,42 +690,40 @@ class MultiRootWavset:
 
                 # ---------------- Optional silence replacement ---------------
                 if self.replace_silence:
-                    if wav.count_nonzero() < 0.8 * wav.numel() and random.random() < self.replace_silence_prob:
-                        candidates_dict = self.non_silent_segments_by_source.get(source, {})
+                    if (wav.abs() > 10**(-60/20)).float().mean() < 0.3 and random.random() < self.replace_silence_prob:
                         for _ in range(20):
-                            if not candidates_dict:
-                                break
-                            rand_name = random.choice(list(candidates_dict.keys()))
-                            segs = candidates_dict[rand_name]
-                            if not segs:
+                            wav_rep, rep_meta = self._sample_non_silent_segment(random, source)
+                            if wav_rep is None:
                                 continue
-                            rand_seg = random.choice(segs)
-                            rand_root = self.track_to_root.get(rand_name)
-                            if rand_root is None:
-                                continue
-                            rand_meta = self.metadatas[rand_root][rand_name]
-                            rand_file = self.get_file(rand_root, rand_name, source)
-                            if rand_file is None or not os.path.exists(rand_file):
-                                continue
-                            rand_offset = 0
-                            if self.segment is not None:
-                                rand_offset = int(rand_meta['samplerate'] * self.shift * rand_seg)
-                            wav, _ = ta.load(str(rand_file), frame_offset=rand_offset, num_frames=num_frames)
-                            if rand_meta['samplerate'] != meta['samplerate']:
-                                wav = julius.resample_frac(wav, rand_meta['samplerate'], meta['samplerate'])
-                            wav = convert_audio_channels(wav, self.channels)
-                            # Match volume statistics to target track
-                            target_mean, target_std = meta['mean'], meta['std']
-                            src_mean, src_std = rand_meta.get('mean', 0.0), rand_meta.get('std', 1.0)
-                            if src_std > 0:
-                                wav = (wav - src_mean) * (target_std / src_std) + target_mean
-                            if wav.count_nonzero() > 0.8 * wav.numel():
+                            # Resample to match target track samplerate
+                            if rep_meta['samplerate'] != meta['samplerate']:
+                                wav_rep = julius.resample_frac(wav_rep, rep_meta['samplerate'], meta['samplerate'])
+                            wav_rep = convert_audio_channels(wav_rep, self.channels)
+
+                            # Volume/statistics matching
+                            if self.normalize:
+                                target_mean, target_std = meta['mean'], meta['std']
+                                src_mean, src_std = rep_meta.get('mean', 0.0), rep_meta.get('std', 1.0)
+                                if src_std > 0:
+                                    wav_rep = (wav_rep - src_mean) * (target_std / src_std) + target_mean
+
+                            if (wav_rep.abs() > 10**(-60/20)).float().mean() > 0.3:
+                                wav = wav_rep
                                 break
 
                 wavs.append(wav)
 
             # Ensure all stems share the same length (min across stems).
-            min_length = min(wav.shape[-1] for wav in wavs)
+            if not wavs:
+                min_length = 0
+            else:
+                min_length = min(wav.shape[-1] for wav in wavs)
+
+            if min_length == 0:
+                # If loading failed or empty files, return zeros of target length
+                fallback_frames = int(self.samplerate * (self.segment or 1.0))
+                return th.zeros(len(self.sources), self.channels, fallback_frames)
+
             wavs = [wav[..., :min_length] for wav in wavs]
 
             example = th.stack(wavs)  # (nb_sources, channels, time)
@@ -591,7 +732,7 @@ class MultiRootWavset:
             if self.noise_inject:
                 elems_per_src = example.shape[1] * example.shape[2]
                 nonzero_counts = example.ne(0).sum(dim=(1, 2))
-                silence_mask = nonzero_counts < 0.8 * elems_per_src
+                silence_mask = nonzero_counts < 0.3 * elems_per_src
                 if silence_mask.any() and random.random() < self.noise_inject_prob:
                     stds = th.empty(example.size(0), dtype=example.dtype, device=example.device).uniform_(0.00003, 0.00009)
                     noise = th.randn_like(example) * stds[:, None, None]
@@ -601,7 +742,8 @@ class MultiRootWavset:
             example = julius.resample_frac(example, meta['samplerate'], self.samplerate)
 
             if self.normalize:
-                example = (example - meta['mean']) / meta['std']
+                denom = meta['std'] if meta.get('std',1.0) > 1e-6 else 1.0
+                example = (example - meta['mean']) / denom
             if self.segment:
                 length = int(self.segment * self.samplerate)
                 example = example[..., :length]

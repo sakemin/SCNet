@@ -32,15 +32,15 @@ def _convert_to_mp3(wav_path, bitrate="192k"):
     return mp3_path
 
 class Solver(object):
-    def __init__(self, loaders, model, optimizer, config, args):
+    def __init__(self, loaders, model, optimizer, config, args, accelerator=None):
         self.config = config
         self.loaders = loaders
 
         self.model = model
         self.optimizer = optimizer
         self.device = next(iter(self.model.parameters())).device
-        self.accelerator = Accelerator()
-        self.scaler = GradScaler()
+        self.accelerator = accelerator if accelerator is not None else Accelerator()
+        # self.scaler = GradScaler()
 
         # Initialize global step before potential checkpoint loading
         self.global_step = 0
@@ -78,7 +78,7 @@ class Solver(object):
             wandb_config = config.to_dict() if hasattr(config, 'to_dict') else dict(config)
             wandb_init_kwargs = dict(
                 entity='sakemin',
-                project='scnet' if not config.data.multi_root else 'scnet-10insts',
+                project='scnet' if not config.data.multi_root else 'scnet-block',
                 config=wandb_config
             )
 
@@ -96,7 +96,7 @@ class Solver(object):
                     base_dir = base_dir.parent  # strip the extra 'wandb'
                 wandb_init_kwargs.update({
                     'id': run_id,
-                    'resume': 'must',
+                    'resume': 'allow',
                     'dir': str(base_dir)
                 })
 
@@ -130,6 +130,7 @@ class Solver(object):
                 else:
                     search_dir = candidate_dir
                 self.resume_checkpoint_file = self._find_latest_checkpoint(search_dir)
+                logger.info(f"Resuming from checkpoint: {self.resume_checkpoint_file}")
             # Sync the selected checkpoint path across all processes
             if self.accelerator.state.distributed_type != DistributedType.NO and dist.is_initialized():
                 obj_list = [str(self.resume_checkpoint_file) if self.resume_checkpoint_file else ""]
@@ -200,7 +201,7 @@ class Solver(object):
         ckpt_path = getattr(self, 'resume_checkpoint_file', None) or self.checkpoint_file
         if ckpt_path.exists():
             logger.info(f'Loading checkpoint model: {ckpt_path}')
-            package = torch.load(ckpt_path, map_location=self.accelerator.device)
+            package = torch.load(ckpt_path, map_location='cpu')
             self.model.load_state_dict(package['state'])
             self.best_nsdr = package['best_nsdr']
             self.best_state = package['best_state']
@@ -255,9 +256,10 @@ class Solver(object):
         # Optimizing the model
         for epoch in range(self.epoch + 1, self.config.epochs):
             #Adjust learning rate
-            for param_group in self.optimizer.param_groups:
-              param_group['lr'] = self.config.optim.lr * (self.config.optim.decay_rate**((epoch)//self.config.optim.decay_step))
-              logger.info(f"Learning rate adjusted to {self.optimizer.param_groups[0]['lr']}")
+            if getattr(self.config.optim, 'decay_unit', 'epoch') == 'epoch':
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = self.config.optim.lr * (self.config.optim.decay_rate**((epoch)//self.config.optim.decay_step))
+                logger.info(f"Learning rate adjusted to {self.optimizer.param_groups[0]['lr']}")
             
             # Log learning rate to wandb
             if self.accelerator.is_main_process:
@@ -356,7 +358,7 @@ class Solver(object):
             if not train:
                 estimate = apply_model(self.model, mix, split=True, overlap=0)
             else:
-                with autocast():
+                with self.accelerator.autocast():
                    estimate = self.model(mix)
 
             assert estimate.shape == sources.shape, (estimate.shape, sources.shape)
@@ -377,11 +379,15 @@ class Solver(object):
 
             # optimize model in training mode
             if train:
-                scaled_loss = self.scaler.scale(loss)
-                self.accelerator.backward(scaled_loss)
+                # Adjust learning rate if configured to use step unit
+                if getattr(self.config.optim, 'decay_unit', 'epoch') == 'step':
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = self.config.optim.lr * (self.config.optim.decay_rate**((global_step)/self.config.optim.decay_step))
+
+                self.accelerator.backward(loss)
 
                 # Unscale the gradients and apply gradient clipping
-                self.scaler.unscale_(self.optimizer)  # required before clipping when using mixed precision
+                # self.scaler.unscale_(self.optimizer)  # required before clipping when using mixed precision
                 max_norm = getattr(self.config.optim, 'max_grad_norm', 1.0)
                 if max_norm is not None and max_norm > 0:
                     self.accelerator.clip_grad_norm_(self.model.parameters(), max_norm)
@@ -394,8 +400,7 @@ class Solver(object):
                         grads.append(p.grad.data)
                 losses['grad'] = grad_norm ** 0.5
 
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                self.optimizer.step()
                 self.optimizer.zero_grad()
                 for ema in self.emas['batch']:
                     ema.update()
@@ -404,6 +409,8 @@ class Solver(object):
             
             if train and (global_step+1) % self.config.log_every == 0:
                 self._log_wandb(losses, step=global_step, prefix="train_nonavg/")
+                if self.accelerator.is_main_process:
+                     wandb.log({"learning_rate": self.optimizer.param_groups[0]['lr']}, step=global_step)
 
             losses = averager(losses)
 
@@ -464,10 +471,16 @@ class Solver(object):
             return
         if not self.audio_log_samples or self.audio_log_root is None:
             return
+        mixture_path = None
         for sample_name in self.audio_log_samples:
             track_dir = Path(self.audio_log_root) / sample_name
-            mixture_path = track_dir / 'mixture.wav'
-            if not mixture_path.exists():
+            for fname in ['mixture.wav', 'Mixed.wav', 'mixed.wav']:
+                candidate = track_dir / fname
+                if candidate.exists():
+                    mixture_path = candidate
+                    break
+        
+            if mixture_path is None:
                 continue
 
             # Load mixture

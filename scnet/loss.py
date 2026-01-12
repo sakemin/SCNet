@@ -23,7 +23,7 @@ def spec_rmse_loss(estimate, sources, stft_config):
 
 
     dims = tuple(range(2, loss.dim()))
-    loss = loss.mean(dims).sqrt().mean(dim=(0, 1))  
+    loss = (loss.mean(dims) + 1e-8).sqrt().mean(dim=(0, 1))  
 
     return loss
 

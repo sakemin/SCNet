@@ -1,6 +1,7 @@
 data:
   multi_root: true
-  wav: ['/data3/ORIGINAL_DATA/beatpulse_audio', '/data3/ORIGINAL_DATA/beatpulse_audio_1992', '/data3/ORIGINAL_DATA/beatpulse_audio_904', '/data3/ORIGINAL_DATA/pointune_audio']
+  split: true
+  wav: ['/home/sake/datasets/beatpulse_tracks', '/home/sake/datasets/pointune_tracks/seoul_pointune_839_tracks', '/home/sake/datasets/mixaudio_tracks/mixaudio_package_data_stems']
   samplerate: 44100
   segment: 11
   shift: 0.5
@@ -9,6 +10,8 @@ data:
   metadata: ./metadata
   sources: ['high', 'mid', 'low', 'rhythm', 'melody']
   toothless: 'replace' # 'replace' or 'zero'
+  replace_silence: true
+  replace_silence_prob: 1.0
 
 ema:
   epoch: [0.9, 0.95]
@@ -40,23 +43,24 @@ epochs: 130
 batch_size: 3
 
 optim:
-  lr: 0.0003
+  lr: 0.0002
   decay_rate: 0.98
-  decay_step: 10
+  decay_step: 1000
+  decay_unit: step # 'epoch' or 'step'
   momentum: 0.9
   beta2: 0.999
   optim: adam
   weight_decay: 0
 
 seed: 42
-save_every: 50000
+save_every: 20000
 log_every: 100
-val_every: 10000
+val_every: 20000
 
 augment:
   shift_same: false
   remix:
-    proba: 0.3
+    proba: 0.5
     group_size: 3
   scale:
     proba: 1
@@ -66,3 +70,13 @@ augment:
 
 misc:
   num_workers: 10
+
+
+audio_log:
+  enable: True
+  samples: ["000526_#33583 - Summer Love/__new_stems_outputs__", "000940_#43112 - Pyrex Lock Up (Stems)/__new_stems_outputs__", "000805_#41748 - Unsolved (Stems)/__new_stems_outputs__", "004050_#87195 - Antes A (Stems)/__new_stems_outputs__"]
+  root: /home/sake/datasets/beatpulse_tracks
+  segment: 11
+  start: 30
+  use_mp3: True
+  mp3_bitrate: 192k
